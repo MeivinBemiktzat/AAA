@@ -1,7 +1,9 @@
-name: Download Gemini Extensions and Release
+name: Create Release and Upload Asset
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build-and-release:
@@ -13,24 +15,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download VSIX Files
+      - name: Download file
         run: |
-          mkdir -p dist
-          # Gemini Code Assist
-          curl -L "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/Google/vsextensions/geminicodeassist/latest/vspackage" -o dist/geminicodeassist.vsix
-          
-          # Google Cloud Code (כולל תמיכה ב-Gemini)
-          curl -L "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GoogleCloudTools/vsextensions/cloudcode/latest/vspackage" -o dist/cloudcode.vsix
+          curl -L -o compositor-win32-x64-msvc-4.0.516.tgz https://registry.npmjs.org/@remotion/compositor-win32-x64-msvc/-/compositor-win32-x64-msvc-4.0.516.tgz
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: release-${{ github.run_number }}
-          name: Gemini Extensions Release #${{ github.run_number }}
-          body: |
-            גרסה זו מכילה את קבצי ה-VSIX של התוספים הרשמיים הורדו ישירות מ-VS Code Marketplace.
-          files: |
-            dist/geminicodeassist.vsix
-            dist/cloudcode.vsix
+          files: compositor-win32-x64-msvc-4.0.516.tgz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
