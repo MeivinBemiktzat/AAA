@@ -1,27 +1,32 @@
-name: Create Release and Upload Asset
+name: Download and Create Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'שם התג והריליס (למשל v4.0.516)'
+        required: true
+        default: 'v4.0.516'
+
+permissions:
+  contents: write
 
 jobs:
-  build-and-release:
+  create-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Download file
         run: |
-          curl -L -o compositor-win32-x64-msvc-4.0.516.tgz https://registry.npmjs.org/@remotion/compositor-win32-x64-msvc/-/compositor-win32-x64-msvc-4.0.516.tgz
+          curl -L -o compositor-win32-x64-msvc-4.0.516.tgz "https://registry.npmjs.org/@remotion/compositor-win32-x64-msvc/-/compositor-win32-x64-msvc-4.0.516.tgz"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: Release ${{ github.event.inputs.tag_name }}
           files: compositor-win32-x64-msvc-4.0.516.tgz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
