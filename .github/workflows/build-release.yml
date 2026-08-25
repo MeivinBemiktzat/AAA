@@ -1,12 +1,12 @@
-name: Download and Create Release
+name: Download and Create Esbuild Release
 
 on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'שם התג והריליס (למשל v4.0.516)'
+        description: 'שם התג והריליס (למשל v0.28.1)'
         required: true
-        default: 'v4.0.516'
+        default: 'v0.28.1'
 
 permissions:
   contents: write
@@ -20,13 +20,13 @@ jobs:
 
       - name: Download file
         run: |
-          curl -L -o compositor-win32-x64-msvc-4.0.516.tgz "https://registry.npmjs.org/@remotion/compositor-win32-x64-msvc/-/compositor-win32-x64-msvc-4.0.516.tgz"
+          curl -L -o win32-x64-0.28.1.tgz "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name }}
           name: Release ${{ github.event.inputs.tag_name }}
-          files: compositor-win32-x64-msvc-4.0.516.tgz
+          files: win32-x64-0.28.1.tgz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
