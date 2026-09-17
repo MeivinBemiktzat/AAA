@@ -1,15 +1,10 @@
-name: Download Files and Create Release
+name: Download Links and Create Release
 
 on:
   workflow_dispatch:
     inputs:
-      download_urls:
-        description: "קישורים לקבצים - קישור אחד בכל שורה"
-        required: true
-        type: string
-
       release_tag:
-        description: "תגית למהדורה (לדוגמה v1.0.0)"
+        description: "Release tag"
         required: true
         default: "v1.0.0"
         type: string
@@ -22,81 +17,104 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Prepare
         run: |
           mkdir -p downloads
 
-      - name: Download all files
-        env:
-          DOWNLOAD_URLS: ${{ inputs.download_urls }}
+      - name: Download all links
         run: |
           set -e
 
-          echo "$DOWNLOAD_URLS" | while IFS= read -r URL; do
+          if [ ! -f links.txt ]; then
+            echo "ERROR: links.txt was not found!"
+            exit 1
+          fi
 
-            # דילוג על שורות ריקות
+          COUNT=0
+
+          while IFS= read -r URL || [ -n "$URL" ]; do
+
+            # התעלמות משורות ריקות
             [ -z "$URL" ] && continue
 
-            echo "================================"
-            echo "Downloading:"
+            # התעלמות משורות שמתחילות ב-#
+            case "$URL" in
+              \#*) continue ;;
+            esac
+
+            COUNT=$((COUNT + 1))
+
+            echo "======================================"
+            echo "Downloading #$COUNT"
             echo "$URL"
 
-            # הוצאת שם הקובץ מה-URL
             FILENAME=$(basename "${URL%%\?*}")
 
-            # אם אין שם קובץ ברור
             if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ] || [ "$FILENAME" = "." ]; then
-              FILENAME="file_$(date +%s%N)"
+              FILENAME="file_$COUNT"
             fi
 
-            # מניעת דריסה במקרה שיש שני קבצים עם אותו שם
+            # מניעת התנגשות בשמות
             ORIGINAL="$FILENAME"
-            COUNTER=1
+            NUMBER=1
 
             while [ -e "downloads/$FILENAME" ]; do
+
               EXT="${ORIGINAL##*.}"
 
               if [ "$EXT" = "$ORIGINAL" ]; then
-                FILENAME="${ORIGINAL}_${COUNTER}"
+                FILENAME="${ORIGINAL}_${NUMBER}"
               else
                 BASE="${ORIGINAL%.*}"
-                FILENAME="${BASE}_${COUNTER}.${EXT}"
+                FILENAME="${BASE}_${NUMBER}.${EXT}"
               fi
 
-              COUNTER=$((COUNTER + 1))
+              NUMBER=$((NUMBER + 1))
             done
 
-            curl -L --fail --retry 3 \
+            curl \
+              -L \
+              --fail \
+              --retry 3 \
+              --retry-all-errors \
               -o "downloads/$FILENAME" \
               "$URL"
 
             if [ ! -s "downloads/$FILENAME" ]; then
-              echo "ERROR: Downloaded file is empty:"
+              echo "ERROR: Download failed:"
               echo "$URL"
               exit 1
             fi
 
             echo "Saved as: $FILENAME"
 
-          done
+          done < links.txt
 
-      - name: Show downloaded files
-        run: |
-          echo "Downloaded files:"
-          ls -lh downloads
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No links found in links.txt!"
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "Downloaded $COUNT files."
 
       - name: Create APP.ZIP
         run: |
           cd downloads
+
           zip -r ../APP.ZIP .
 
           cd ..
 
-          echo "================================"
-          echo "Created APP.ZIP"
+          echo "======================================"
+          echo "APP.ZIP created successfully:"
           ls -lh APP.ZIP
 
-          echo "ZIP contents:"
+          echo ""
+          echo "Contents:"
           unzip -l APP.ZIP
 
       - name: Create GitHub Release
@@ -105,5 +123,4 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           name: "Release ${{ inputs.release_tag }}"
           generate_release_notes: true
-          files: |
-            APP.ZIP
+          files: APP.ZIP
