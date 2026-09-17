@@ -1,17 +1,7 @@
-name: Download File and Create Release
+name: Download Links and Create Release
 
 on:
   workflow_dispatch:
-    inputs:
-      download_url:
-        description: "קישור ישיר לקובץ להורדה"
-        required: true
-        type: string
-      release_tag:
-        description: "תגית למהדורה (לדוגמה v1.0.0)"
-        required: true
-        default: "v1.0.0"
-        type: string
 
 permissions:
   contents: write
@@ -21,57 +11,108 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download file
-        env:
-          DOWNLOAD_URL: ${{ inputs.download_url }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          mkdir -p downloads
+
+      - name: Download all files from links.txt
         run: |
           set -e
 
-          echo "Downloading from:"
-          echo "$DOWNLOAD_URL"
-
-          curl -L --fail --retry 3 \
-            -o downloaded_file \
-            "$DOWNLOAD_URL"
-
-          if [ ! -s downloaded_file ]; then
-            echo "Download failed or file is empty."
+          if [ ! -f links.txt ]; then
+            echo "ERROR: links.txt was not found!"
             exit 1
           fi
 
-          echo "Downloaded successfully."
+          COUNT=0
 
-      - name: Detect filename
-        run: |
-          URL="${{ inputs.download_url }}"
+          while IFS= read -r URL || [ -n "$URL" ]; do
 
-          FILENAME=$(basename "${URL%%\?*}")
+            # Remove Windows CR
+            URL="${URL%$'\r'}"
 
-          if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ] || [ "$FILENAME" = "." ]; then
-            FILENAME="downloaded_file"
+            # Skip empty lines
+            [ -z "$URL" ] && continue
+
+            # Skip comments
+            case "$URL" in
+              \#*) continue ;;
+            esac
+
+            COUNT=$((COUNT + 1))
+
+            echo "Downloading #$COUNT:"
+            echo "$URL"
+
+            FILENAME=$(basename "${URL%%\?*}")
+
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ] || [ "$FILENAME" = "." ]; then
+              FILENAME="file_$COUNT"
+            fi
+
+            ORIGINAL="$FILENAME"
+            NUMBER=1
+
+            while [ -e "downloads/$FILENAME" ]; do
+              EXT="${ORIGINAL##*.}"
+
+              if [ "$EXT" = "$ORIGINAL" ]; then
+                FILENAME="${ORIGINAL}_${NUMBER}"
+              else
+                BASE="${ORIGINAL%.*}"
+                FILENAME="${BASE}_${NUMBER}.${EXT}"
+              fi
+
+              NUMBER=$((NUMBER + 1))
+            done
+
+            curl \
+              -L \
+              --fail \
+              --retry 3 \
+              --retry-all-errors \
+              -o "downloads/$FILENAME" \
+              "$URL"
+
+            if [ ! -s "downloads/$FILENAME" ]; then
+              echo "ERROR: Download failed: $URL"
+              exit 1
+            fi
+
+            echo "Saved: $FILENAME"
+
+          done < links.txt
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No valid links found in links.txt!"
+            exit 1
           fi
 
-          mv downloaded_file "$FILENAME"
-
-          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
-
-          echo "File name: $FILENAME"
+          echo "Downloaded $COUNT files."
 
       - name: Create APP.ZIP
         run: |
-          zip -j APP.ZIP "$FILENAME"
+          cd downloads
+          zip -r ../APP.ZIP .
+          cd ..
 
-          echo "Created APP.ZIP:"
-          ls -lh APP.ZIP
-
-          echo "ZIP contents:"
+          echo "APP.ZIP created:"
           unzip -l APP.ZIP
+
+      - name: Generate release tag
+        id: release
+        run: |
+          TAG="release-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Creating release: $TAG"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
-          name: "Release ${{ inputs.release_tag }}"
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Release ${{ steps.release.outputs.tag }}"
           generate_release_notes: true
-          files: |
-            APP.ZIP
+          files: APP.ZIP
