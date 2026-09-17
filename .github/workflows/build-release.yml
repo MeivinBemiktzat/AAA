@@ -1,32 +1,109 @@
-name: Download and Create Esbuild Release
+name: Download Files and Create Release
 
 on:
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: 'שם התג והריליס (למשל v0.28.1)'
+      download_urls:
+        description: "קישורים לקבצים - קישור אחד בכל שורה"
         required: true
-        default: 'v0.28.1'
+        type: string
+
+      release_tag:
+        description: "תגית למהדורה (לדוגמה v1.0.0)"
+        required: true
+        default: "v1.0.0"
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
+  download-and-release:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Download file
+    steps:
+      - name: Prepare
         run: |
-          curl -L -o win32-x64-0.28.1.tgz "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz"
+          mkdir -p downloads
+
+      - name: Download all files
+        env:
+          DOWNLOAD_URLS: ${{ inputs.download_urls }}
+        run: |
+          set -e
+
+          echo "$DOWNLOAD_URLS" | while IFS= read -r URL; do
+
+            # דילוג על שורות ריקות
+            [ -z "$URL" ] && continue
+
+            echo "================================"
+            echo "Downloading:"
+            echo "$URL"
+
+            # הוצאת שם הקובץ מה-URL
+            FILENAME=$(basename "${URL%%\?*}")
+
+            # אם אין שם קובץ ברור
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ] || [ "$FILENAME" = "." ]; then
+              FILENAME="file_$(date +%s%N)"
+            fi
+
+            # מניעת דריסה במקרה שיש שני קבצים עם אותו שם
+            ORIGINAL="$FILENAME"
+            COUNTER=1
+
+            while [ -e "downloads/$FILENAME" ]; do
+              EXT="${ORIGINAL##*.}"
+
+              if [ "$EXT" = "$ORIGINAL" ]; then
+                FILENAME="${ORIGINAL}_${COUNTER}"
+              else
+                BASE="${ORIGINAL%.*}"
+                FILENAME="${BASE}_${COUNTER}.${EXT}"
+              fi
+
+              COUNTER=$((COUNTER + 1))
+            done
+
+            curl -L --fail --retry 3 \
+              -o "downloads/$FILENAME" \
+              "$URL"
+
+            if [ ! -s "downloads/$FILENAME" ]; then
+              echo "ERROR: Downloaded file is empty:"
+              echo "$URL"
+              exit 1
+            fi
+
+            echo "Saved as: $FILENAME"
+
+          done
+
+      - name: Show downloaded files
+        run: |
+          echo "Downloaded files:"
+          ls -lh downloads
+
+      - name: Create APP.ZIP
+        run: |
+          cd downloads
+          zip -r ../APP.ZIP .
+
+          cd ..
+
+          echo "================================"
+          echo "Created APP.ZIP"
+          ls -lh APP.ZIP
+
+          echo "ZIP contents:"
+          unzip -l APP.ZIP
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag_name }}
-          name: Release ${{ github.event.inputs.tag_name }}
-          files: win32-x64-0.28.1.tgz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ inputs.release_tag }}
+          name: "Release ${{ inputs.release_tag }}"
+          generate_release_notes: true
+          files: |
+            APP.ZIP
