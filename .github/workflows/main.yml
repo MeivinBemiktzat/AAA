@@ -22,7 +22,9 @@ jobs:
       - name: Install yt-dlp, ffmpeg, aria2 and deno
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --upgrade yt-dlp
+          # Use the nightly channel so the latest YouTube fixes (EJS challenge
+          # solver, etc.) are included.
+          python -m pip install --upgrade --pre "yt-dlp[default]"
           sudo apt-get update
           # ffmpeg = merge video+audio ; aria2 = fast parallel downloader
           sudo apt-get install -y ffmpeg aria2
@@ -92,6 +94,7 @@ jobs:
             #  * --concurrent-fragments speeds up fragmented (HLS/DASH) videos.
             yt-dlp \
               $COOKIE_ARGS \
+              --remote-components ejs:github \
               --no-playlist \
               --retries 3 \
               --fragment-retries 3 \
