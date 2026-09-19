@@ -1,4 +1,4 @@
-name: Download Links and Create Release
+name: Download Videos and Create Release
 
 on:
   workflow_dispatch:
@@ -14,11 +14,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade yt-dlp
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Prepare
         run: |
           mkdir -p downloads
 
-      - name: Download all files from links.txt
+      - name: Download all videos from links.txt
         run: |
           set -e
 
@@ -34,6 +46,9 @@ jobs:
             # Remove Windows CR
             URL="${URL%$'\r'}"
 
+            # Trim leading/trailing whitespace
+            URL="$(echo "$URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
             # Skip empty lines
             [ -z "$URL" ] && continue
 
@@ -44,45 +59,26 @@ jobs:
 
             COUNT=$((COUNT + 1))
 
-            echo "Downloading #$COUNT:"
+            echo "=============================="
+            echo "Downloading video #$COUNT:"
             echo "$URL"
+            echo "=============================="
 
-            FILENAME=$(basename "${URL%%\?*}")
-
-            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ] || [ "$FILENAME" = "." ]; then
-              FILENAME="file_$COUNT"
-            fi
-
-            ORIGINAL="$FILENAME"
-            NUMBER=1
-
-            while [ -e "downloads/$FILENAME" ]; do
-              EXT="${ORIGINAL##*.}"
-
-              if [ "$EXT" = "$ORIGINAL" ]; then
-                FILENAME="${ORIGINAL}_${NUMBER}"
-              else
-                BASE="${ORIGINAL%.*}"
-                FILENAME="${BASE}_${NUMBER}.${EXT}"
-              fi
-
-              NUMBER=$((NUMBER + 1))
-            done
-
-            curl \
-              -L \
-              --fail \
-              --retry 3 \
-              --retry-all-errors \
-              -o "downloads/$FILENAME" \
+            # Download the video with yt-dlp.
+            # -o sets an output template that keeps the video title and index.
+            # --merge-output-format mp4 merges video+audio into a single mp4.
+            # --restrict-filenames avoids problematic characters in filenames.
+            yt-dlp \
+              --no-playlist \
+              --retries 3 \
+              --fragment-retries 3 \
+              --restrict-filenames \
+              --merge-output-format mp4 \
+              -f "bestvideo+bestaudio/best" \
+              -o "downloads/%(title)s_${COUNT}.%(ext)s" \
               "$URL"
 
-            if [ ! -s "downloads/$FILENAME" ]; then
-              echo "ERROR: Download failed: $URL"
-              exit 1
-            fi
-
-            echo "Saved: $FILENAME"
+            echo "Finished video #$COUNT"
 
           done < links.txt
 
@@ -91,7 +87,15 @@ jobs:
             exit 1
           fi
 
-          echo "Downloaded $COUNT files."
+          # Make sure something was actually downloaded
+          if [ -z "$(ls -A downloads)" ]; then
+            echo "ERROR: No videos were downloaded!"
+            exit 1
+          fi
+
+          echo "Downloaded videos from $COUNT links."
+          echo "Files in downloads:"
+          ls -lh downloads
 
       - name: Create APP.ZIP
         run: |
