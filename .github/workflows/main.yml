@@ -1,3 +1,4 @@
+```yaml
 name: Download Videos and Create Release
 
 on:
@@ -22,34 +23,55 @@ jobs:
       - name: Install yt-dlp, ffmpeg, aria2 and deno
         run: |
           python -m pip install --upgrade pip
-          # Use the nightly channel so the latest YouTube fixes (EJS challenge
-          # solver, etc.) are included.
+
+          # Install latest pre-release yt-dlp
+          # This includes the newest YouTube extraction fixes.
           python -m pip install --upgrade --pre "yt-dlp[default]"
+
           sudo apt-get update
-          # ffmpeg = merge video+audio ; aria2 = fast parallel downloader
           sudo apt-get install -y ffmpeg aria2
-          # deno = JavaScript runtime that YouTube extraction now needs
+
+          # Install Deno for YouTube JavaScript challenges.
           curl -fsSL https://deno.land/install.sh | sh
+
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
       - name: Prepare
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
           mkdir -p downloads
 
-          # If a YT_COOKIES secret is provided, write it to a cookies file.
-          # This is what solves the "Sign in to confirm you're not a bot" error.
           if [ -n "${YT_COOKIES}" ]; then
             printf '%s\n' "${YT_COOKIES}" > cookies.txt
-            echo "cookies.txt created from secret."
+            chmod 600 cookies.txt
+            echo "cookies.txt created from YT_COOKIES secret."
           else
-            echo "No YT_COOKIES secret set - YouTube may block the download."
+            echo "No YT_COOKIES secret set."
+            echo "YouTube may block some downloads."
           fi
-        env:
-          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+
+      - name: Check yt-dlp installation
+        run: |
+          echo "yt-dlp version:"
+          yt-dlp --version
+
+          echo ""
+          echo "ffmpeg version:"
+          ffmpeg -version | head -n 1
+
+          echo ""
+          echo "aria2 version:"
+          aria2c --version | head -n 1
+
+          echo ""
+          echo "Deno version:"
+          deno --version
 
       - name: Download all videos from links.txt
+        shell: bash
         run: |
-          set -e
+          set -u
 
           if [ ! -f links.txt ]; then
             echo "ERROR: links.txt was not found!"
@@ -57,6 +79,8 @@ jobs:
           fi
 
           COUNT=0
+          SUCCESS=0
+          FAILED=0
 
           while IFS= read -r URL || [ -n "$URL" ]; do
 
@@ -64,40 +88,92 @@ jobs:
             URL="${URL%$'\r'}"
 
             # Trim leading/trailing whitespace
-            URL="$(echo "$URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            URL="$(echo "$URL" | sed \
+              -e 's/^[[:space:]]*//' \
+              -e 's/[[:space:]]*$//')"
 
             # Skip empty lines
-            [ -z "$URL" ] && continue
+            if [ -z "$URL" ]; then
+              continue
+            fi
 
             # Skip comments
             case "$URL" in
-              \#*) continue ;;
+              \#*)
+                continue
+                ;;
             esac
+
+            # ---------------------------------------------------------
+            # Support Markdown links:
+            #
+            # [https://www.youtube.com/watch?v=ABC](https://www.youtube.com/watch?v=ABC)
+            #
+            # Convert them to:
+            #
+            # https://www.youtube.com/watch?v=ABC
+            # ---------------------------------------------------------
+
+            if [[ "$URL" =~ ^\[.*\]\((https?://[^)]*)\)$ ]]; then
+              URL="${BASH_REMATCH[1]}"
+            fi
+
+            # ---------------------------------------------------------
+            # Also support:
+            #
+            # <https://www.youtube.com/watch?v=ABC>
+            # ---------------------------------------------------------
+
+            if [[ "$URL" =~ ^\<https?://.*\>$ ]]; then
+              URL="${URL#<}"
+              URL="${URL%>}"
+            fi
+
+            # ---------------------------------------------------------
+            # Validate URL
+            # ---------------------------------------------------------
+
+            if [[ ! "$URL" =~ ^https?:// ]]; then
+              echo "Skipping invalid line:"
+              echo "$URL"
+              echo ""
+              continue
+            fi
 
             COUNT=$((COUNT + 1))
 
-            echo "=============================="
-            echo "Downloading video #$COUNT:"
-            echo "$URL"
-            echo "=============================="
+            echo ""
+            echo "=========================================="
+            echo "Downloading video #$COUNT"
+            echo "URL: $URL"
+            echo "=========================================="
 
-            # Use cookies file only if it exists.
-            COOKIE_ARGS=""
+            # ---------------------------------------------------------
+            # Build cookie arguments.
+            # ---------------------------------------------------------
+
+            COOKIE_ARGS=()
+
             if [ -f cookies.txt ]; then
-              COOKIE_ARGS="--cookies cookies.txt"
+              COOKIE_ARGS=(
+                --cookies
+                cookies.txt
+              )
             fi
 
-            # Download the video with yt-dlp.
-            #  * -f: best quality up to 1080p, merged into mp4 (fast enough,
-            #        avoids huge 4K files while keeping HD quality).
-            #  * aria2c external downloader with 16 parallel connections = fast.
-            #  * --concurrent-fragments speeds up fragmented (HLS/DASH) videos.
-            yt-dlp \
-              $COOKIE_ARGS \
+            # ---------------------------------------------------------
+            # Download video.
+            #
+            # If one video fails, continue with the next one.
+            # ---------------------------------------------------------
+
+            if yt-dlp \
+              "${COOKIE_ARGS[@]}" \
               --remote-components ejs:github \
               --no-playlist \
-              --retries 3 \
-              --fragment-retries 3 \
+              --retries 5 \
+              --fragment-retries 5 \
+              --retry-sleep 2 \
               --restrict-filenames \
               --merge-output-format mp4 \
               --concurrent-fragments 8 \
@@ -106,41 +182,95 @@ jobs:
               -f "bv*[height<=1080]+ba/b[height<=1080]/best" \
               -o "downloads/%(title)s_${COUNT}.%(ext)s" \
               "$URL"
+            then
+              SUCCESS=$((SUCCESS + 1))
 
-            echo "Finished video #$COUNT"
+              echo ""
+              echo "SUCCESS: Video #$COUNT downloaded."
+            else
+              FAILED=$((FAILED + 1))
+
+              echo ""
+              echo "FAILED: Video #$COUNT"
+              echo "URL: $URL"
+              echo ""
+              echo "Continuing to the next video..."
+            fi
 
           done < links.txt
+
+          echo ""
+          echo "=========================================="
+          echo "DOWNLOAD SUMMARY"
+          echo "=========================================="
+          echo "Links found: $COUNT"
+          echo "Successful:  $SUCCESS"
+          echo "Failed:      $FAILED"
+          echo "=========================================="
+
+          # ---------------------------------------------------------
+          # At least one valid link must exist.
+          # ---------------------------------------------------------
 
           if [ "$COUNT" -eq 0 ]; then
             echo "ERROR: No valid links found in links.txt!"
             exit 1
           fi
 
-          # Make sure something was actually downloaded
-          if [ -z "$(ls -A downloads)" ]; then
+          # ---------------------------------------------------------
+          # At least one video must have downloaded.
+          # ---------------------------------------------------------
+
+          if [ "$SUCCESS" -eq 0 ]; then
             echo "ERROR: No videos were downloaded!"
             exit 1
           fi
 
-          echo "Downloaded videos from $COUNT links."
+          echo ""
           echo "Files in downloads:"
-          ls -lh downloads
+          ls -lah downloads
 
       - name: Create APP.ZIP
         run: |
+          if [ ! -d downloads ]; then
+            echo "ERROR: downloads directory does not exist!"
+            exit 1
+          fi
+
+          if [ -z "$(ls -A downloads)" ]; then
+            echo "ERROR: downloads directory is empty!"
+            exit 1
+          fi
+
           cd downloads
+
           zip -r ../APP.ZIP .
+
           cd ..
 
-          echo "APP.ZIP created:"
+          echo ""
+          echo "=========================================="
+          echo "APP.ZIP CREATED"
+          echo "=========================================="
+
+          ls -lh APP.ZIP
+
+          echo ""
+          echo "Contents:"
           unzip -l APP.ZIP
 
       - name: Generate release tag
         id: release
+        shell: bash
         run: |
           TAG="release-$(date -u +'%Y%m%d-%H%M%S')"
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Creating release: $TAG"
+
+          echo "=========================================="
+          echo "Creating release:"
+          echo "$TAG"
+          echo "=========================================="
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -148,4 +278,16 @@ jobs:
           tag_name: ${{ steps.release.outputs.tag }}
           name: "Release ${{ steps.release.outputs.tag }}"
           generate_release_notes: true
-          files: APP.ZIP
+          files: |
+            APP.ZIP
+
+      - name: Final summary
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "WORKFLOW COMPLETED"
+          echo "=========================================="
+          echo "Release: ${{ steps.release.outputs.tag }}"
+          echo "File: APP.ZIP"
+          echo "=========================================="
+```
