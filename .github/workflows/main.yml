@@ -1,4 +1,3 @@
-```yaml
 name: Download Videos and Create Release
 
 on:
@@ -290,4 +289,3 @@ jobs:
           echo "Release: ${{ steps.release.outputs.tag }}"
           echo "File: APP.ZIP"
           echo "=========================================="
-```
