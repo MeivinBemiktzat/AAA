@@ -22,17 +22,12 @@ jobs:
       - name: Install yt-dlp, ffmpeg, aria2 and deno
         run: |
           python -m pip install --upgrade pip
-
-          # Install latest pre-release yt-dlp
-          # This includes the newest YouTube extraction fixes.
           python -m pip install --upgrade --pre "yt-dlp[default]"
 
           sudo apt-get update
           sudo apt-get install -y ffmpeg aria2
 
-          # Install Deno for YouTube JavaScript challenges.
           curl -fsSL https://deno.land/install.sh | sh
-
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
       - name: Prepare
@@ -50,21 +45,18 @@ jobs:
             echo "YouTube may block some downloads."
           fi
 
-      - name: Check yt-dlp installation
+      - name: Check installed tools
         run: |
-          echo "yt-dlp version:"
+          echo "yt-dlp:"
           yt-dlp --version
 
-          echo ""
-          echo "ffmpeg version:"
+          echo "ffmpeg:"
           ffmpeg -version | head -n 1
 
-          echo ""
-          echo "aria2 version:"
+          echo "aria2:"
           aria2c --version | head -n 1
 
-          echo ""
-          echo "Deno version:"
+          echo "Deno:"
           deno --version
 
       - name: Download all videos from links.txt
@@ -103,41 +95,51 @@ jobs:
                 ;;
             esac
 
-            # ---------------------------------------------------------
-            # Support Markdown links:
+            # -----------------------------------------------------
+            # Convert Markdown link:
             #
-            # [https://www.youtube.com/watch?v=ABC](https://www.youtube.com/watch?v=ABC)
+            # [https://example.com](https://example.com)
             #
-            # Convert them to:
+            # into:
             #
-            # https://www.youtube.com/watch?v=ABC
-            # ---------------------------------------------------------
+            # https://example.com
+            # -----------------------------------------------------
 
-            if [[ "$URL" =~ ^\[.*\]\((https?://[^)]*)\)$ ]]; then
-              URL="${BASH_REMATCH[1]}"
-            fi
+            case "$URL" in
+              \[*\]\(*\))
+                URL="$(printf '%s\n' "$URL" | sed -E 's/^\[[^]]*\]\((https?:\/\/[^)]*)\)$/\1/')"
+                ;;
+            esac
 
-            # ---------------------------------------------------------
-            # Also support:
-            #
-            # <https://www.youtube.com/watch?v=ABC>
-            # ---------------------------------------------------------
+            # -----------------------------------------------------
+            # Remove < > around URL if present
+            # -----------------------------------------------------
 
-            if [[ "$URL" =~ ^\<https?://.*\>$ ]]; then
-              URL="${URL#<}"
-              URL="${URL%>}"
-            fi
+            case "$URL" in
+              \<https://*\>)
+                URL="${URL#<}"
+                URL="${URL%>}"
+                ;;
+              \<http://*\>)
+                URL="${URL#<}"
+                URL="${URL%>}"
+                ;;
+            esac
 
-            # ---------------------------------------------------------
-            # Validate URL
-            # ---------------------------------------------------------
+            # -----------------------------------------------------
+            # Validate URL without using Bash regex
+            # -----------------------------------------------------
 
-            if [[ ! "$URL" =~ ^https?:// ]]; then
-              echo "Skipping invalid line:"
-              echo "$URL"
-              echo ""
-              continue
-            fi
+            case "$URL" in
+              http://*|https://*)
+                ;;
+              *)
+                echo "Skipping invalid line:"
+                echo "$URL"
+                echo ""
+                continue
+                ;;
+            esac
 
             COUNT=$((COUNT + 1))
 
@@ -147,9 +149,9 @@ jobs:
             echo "URL: $URL"
             echo "=========================================="
 
-            # ---------------------------------------------------------
-            # Build cookie arguments.
-            # ---------------------------------------------------------
+            # -----------------------------------------------------
+            # Cookies
+            # -----------------------------------------------------
 
             COOKIE_ARGS=()
 
@@ -160,11 +162,9 @@ jobs:
               )
             fi
 
-            # ---------------------------------------------------------
-            # Download video.
-            #
-            # If one video fails, continue with the next one.
-            # ---------------------------------------------------------
+            # -----------------------------------------------------
+            # Download
+            # -----------------------------------------------------
 
             if yt-dlp \
               "${COOKIE_ARGS[@]}" \
@@ -182,11 +182,14 @@ jobs:
               -o "downloads/%(title)s_${COUNT}.%(ext)s" \
               "$URL"
             then
+
               SUCCESS=$((SUCCESS + 1))
 
               echo ""
               echo "SUCCESS: Video #$COUNT downloaded."
+
             else
+
               FAILED=$((FAILED + 1))
 
               echo ""
@@ -194,6 +197,7 @@ jobs:
               echo "URL: $URL"
               echo ""
               echo "Continuing to the next video..."
+
             fi
 
           done < links.txt
@@ -207,18 +211,10 @@ jobs:
           echo "Failed:      $FAILED"
           echo "=========================================="
 
-          # ---------------------------------------------------------
-          # At least one valid link must exist.
-          # ---------------------------------------------------------
-
           if [ "$COUNT" -eq 0 ]; then
             echo "ERROR: No valid links found in links.txt!"
             exit 1
           fi
-
-          # ---------------------------------------------------------
-          # At least one video must have downloaded.
-          # ---------------------------------------------------------
 
           if [ "$SUCCESS" -eq 0 ]; then
             echo "ERROR: No videos were downloaded!"
@@ -255,7 +251,7 @@ jobs:
           ls -lh APP.ZIP
 
           echo ""
-          echo "Contents:"
+          echo "ZIP CONTENTS:"
           unzip -l APP.ZIP
 
       - name: Generate release tag
@@ -266,10 +262,11 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+          echo ""
           echo "=========================================="
-          echo "Creating release:"
+          echo "RELEASE"
+          echo "=========================================="
           echo "$TAG"
-          echo "=========================================="
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
