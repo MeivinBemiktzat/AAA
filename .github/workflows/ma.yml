@@ -19,25 +19,25 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install yt-dlp, gdown, ffmpeg and aria2
+      - name: Install dependencies (gdown, yt-dlp, ffmpeg, aria2, zip)
         run: |
           python -m pip install --upgrade pip
           python -m pip install --upgrade --pre "yt-dlp[default]" gdown
 
           sudo apt-get update
-          sudo apt-get install -y ffmpeg aria2
+          sudo apt-get install -y ffmpeg aria2 zip
 
-      - name: Prepare environment
+      - name: Prepare directory
         run: |
           mkdir -p downloads
 
-      - name: Download links (Smart Drive / yt-dlp)
+      - name: Download all links from links.txt
         shell: bash
         run: |
           set -u
 
           if [ ! -f links.txt ]; then
-            echo "ERROR: links.txt was not found!"
+            echo "ERROR: links.txt was not found in the root directory!"
             exit 1
           fi
 
@@ -46,14 +46,15 @@ jobs:
           FAILED=0
 
           while IFS= read -r URL || [ -n "$URL" ]; do
+            # ניקוי רווחים ותווי ירידת שורה
             URL="${URL%$'\r'}"
             URL="$(echo "$URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
-            # Skip empty and comments
+            # דילוג על שורות ריקות והערות
             [ -z "$URL" ] && continue
             [[ "$URL" =~ ^# ]] && continue
 
-            # Clean markdown/brackets
+            # ניקוי תגיות markdown וסוגריים
             URL="$(printf '%s\n' "$URL" | sed -E 's/^\[[^]]*\]\((https?:\/\/[^)]*)\)$/\1/')"
             URL="${URL#<}"
             URL="${URL%>}"
@@ -66,19 +67,35 @@ jobs:
 
             DOWNLOAD_OK=0
 
-            # בדיקה האם הקישור הוא קישור של Google Drive
+            # זיהוי קישור של גוגל דרייב
             if [[ "$URL" == *"drive.google.com"* ]]; then
-              echo "Identified Google Drive link. Using gdown..."
+              echo "Google Drive link detected. Downloading with gdown..."
               
-              # שימוש ב-gdown שמטפל אוטומטית באזהרות של קבצים כבדים
               if gdown --fuzzy "$URL" -O downloads/ --remaining-ok; then
                 DOWNLOAD_OK=1
+              else
+                echo "Attempting fallback extraction by File ID..."
+                FILE_ID=""
+                if [[ "$URL" =~ [?&]id=([a-zA-Z0-9_-]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                elif [[ "$URL" =~ /d/([a-zA-Z0-9_-]+) ]]; then
+                  FILE_ID="${BASH_REMATCH[1]}"
+                fi
+
+                if [ -n "$FILE_ID" ]; then
+                  echo "Trying gdown directly with ID: $FILE_ID"
+                  if gdown --id "$FILE_ID" -O downloads/; then
+                    DOWNLOAD_OK=1
+                  fi
+                fi
               fi
             else
-              echo "Using yt-dlp for standard video link..."
+              # קישור רגיל (YouTube / אתרים אחרים)
+              echo "General video link detected. Downloading with yt-dlp..."
               if yt-dlp \
                 --no-playlist \
                 --retries 5 \
+                --fragment-retries 5 \
                 --restrict-filenames \
                 --merge-output-format mp4 \
                 -f "bv*[height<=1080]+ba/b[height<=1080]/best" \
@@ -93,7 +110,7 @@ jobs:
               echo "SUCCESS: Link #$COUNT downloaded."
             else
               FAILED=$((FAILED + 1))
-              echo "FAILED: Link #$COUNT."
+              echo "FAILED: Link #$COUNT could not be downloaded."
             fi
 
           done < links.txt
@@ -102,14 +119,34 @@ jobs:
           echo "=========================================="
           echo "DOWNLOAD SUMMARY"
           echo "=========================================="
-          echo "Links found: $COUNT | Successful: $SUCCESS | Failed: $FAILED"
+          echo "Total: $COUNT | Succeeded: $SUCCESS | Failed: $FAILED"
+          echo "=========================================="
 
           if [ "$SUCCESS" -eq 0 ]; then
-            echo "ERROR: No videos downloaded successfully."
+            echo "ERROR: No files were downloaded successfully!"
             exit 1
           fi
 
+          echo "Files in downloads directory:"
           ls -lah downloads
+
+      - name: Create APP.ZIP
+        run: |
+          if [ ! -d downloads ] || [ -z "$(ls -A downloads)" ]; then
+            echo "ERROR: downloads directory is empty!"
+            exit 1
+          fi
+
+          echo "Compressing files into APP.ZIP..."
+          cd downloads
+          zip -r ../APP.ZIP .
+          cd ..
+
+          echo ""
+          echo "=========================================="
+          echo "APP.ZIP CREATED SUCCESSFULLY"
+          echo "=========================================="
+          ls -lh APP.ZIP
 
       - name: Generate release tag
         id: release
@@ -118,11 +155,15 @@ jobs:
           TAG="release-$(date -u +'%Y%m%d-%H%M%S')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release and Upload Files
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: "Release ${{ steps.release.outputs.tag }}"
           generate_release_notes: true
-          # מעלה ישירות את קבצי הווידאו שהורדו (ללא צורך לדחוס ל-ZIP ענק שעלול להיכשל)
-          files: downloads/*
+          files: |
+            APP.ZIP
+
+      - name: Done
+        run: |
+          echo "Workflow finished successfully. Release created with APP.ZIP!"
