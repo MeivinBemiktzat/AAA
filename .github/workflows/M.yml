@@ -53,6 +53,17 @@ jobs:
               FILENAME="file_$COUNT"
             fi
 
+            # טיפול בשמות קבצים ארוכים מדי כדי למנוע שגיאות מערכת קבצים
+            if [ ${#FILENAME} -gt 100 ]; then
+              EXT="${FILENAME##*.}"
+              if [ "$EXT" != "$FILENAME" ] && [ ${#EXT} -lt 10 ]; then
+                BASE="${FILENAME%.*}"
+                FILENAME="${BASE:0:90}.$EXT"
+              else
+                FILENAME="${FILENAME:0:100}"
+              fi
+            fi
+
             ORIGINAL="$FILENAME"
             NUMBER=1
 
