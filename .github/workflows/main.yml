@@ -163,25 +163,50 @@ jobs:
             fi
 
             # -----------------------------------------------------
-            # Download
+            # Download (try several player clients as fallback)
+            #
+            # A single client (e.g. the default one used together
+            # with --remote-components ejs:github) can report a
+            # video as "unavailable" while other clients can still
+            # fetch it. We try a short list of clients in order and
+            # only mark the video as FAILED if all of them fail.
             # -----------------------------------------------------
 
-            if yt-dlp \
-              "${COOKIE_ARGS[@]}" \
-              --remote-components ejs:github \
-              --no-playlist \
-              --retries 5 \
-              --fragment-retries 5 \
-              --retry-sleep 2 \
-              --restrict-filenames \
-              --merge-output-format mp4 \
-              --concurrent-fragments 8 \
-              --downloader aria2c \
-              --downloader-args "aria2c:-x16 -s16 -k1M" \
-              -f "bv*[height<=1080]+ba/b[height<=1080]/best" \
-              -o "downloads/%(title)s_${COUNT}.%(ext)s" \
-              "$URL"
-            then
+            CLIENTS=("web,tv" "web_embedded,web_safari" "android_vr" "ios")
+            DOWNLOAD_OK=0
+
+            for CLIENT in "${CLIENTS[@]}"; do
+
+              echo ""
+              echo "---- Trying client(s): $CLIENT ----"
+
+              if yt-dlp \
+                "${COOKIE_ARGS[@]}" \
+                --extractor-args "youtube:player_client=$CLIENT" \
+                --remote-components ejs:github \
+                --no-playlist \
+                --retries 5 \
+                --fragment-retries 5 \
+                --retry-sleep 2 \
+                --restrict-filenames \
+                --merge-output-format mp4 \
+                --concurrent-fragments 8 \
+                --downloader aria2c \
+                --downloader-args "aria2c:-x16 -s16 -k1M" \
+                -f "bv*[height<=1080]+ba/b[height<=1080]/best" \
+                -o "downloads/%(title)s_${COUNT}.%(ext)s" \
+                "$URL"
+              then
+                DOWNLOAD_OK=1
+                break
+              else
+                echo ""
+                echo "Client(s) '$CLIENT' failed for this video, trying next option..."
+              fi
+
+            done
+
+            if [ "$DOWNLOAD_OK" -eq 1 ]; then
 
               SUCCESS=$((SUCCESS + 1))
 
@@ -193,7 +218,7 @@ jobs:
               FAILED=$((FAILED + 1))
 
               echo ""
-              echo "FAILED: Video #$COUNT"
+              echo "FAILED: Video #$COUNT (all clients failed)"
               echo "URL: $URL"
               echo ""
               echo "Continuing to the next video..."
