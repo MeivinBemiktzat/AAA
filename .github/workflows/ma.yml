@@ -71,7 +71,7 @@ jobs:
             if [[ "$URL" == *"drive.google.com"* ]]; then
               echo "Google Drive link detected. Downloading with gdown..."
               
-              if gdown --fuzzy "$URL" -O downloads/; then
+              if gdown "$URL" -O downloads/; then
                 DOWNLOAD_OK=1
               fi
             else
