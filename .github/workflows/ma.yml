@@ -1,0 +1,128 @@
+name: Download Videos and Create Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yt-dlp, gdown, ffmpeg and aria2
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade --pre "yt-dlp[default]" gdown
+
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg aria2
+
+      - name: Prepare environment
+        run: |
+          mkdir -p downloads
+
+      - name: Download links (Smart Drive / yt-dlp)
+        shell: bash
+        run: |
+          set -u
+
+          if [ ! -f links.txt ]; then
+            echo "ERROR: links.txt was not found!"
+            exit 1
+          fi
+
+          COUNT=0
+          SUCCESS=0
+          FAILED=0
+
+          while IFS= read -r URL || [ -n "$URL" ]; do
+            URL="${URL%$'\r'}"
+            URL="$(echo "$URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+            # Skip empty and comments
+            [ -z "$URL" ] && continue
+            [[ "$URL" =~ ^# ]] && continue
+
+            # Clean markdown/brackets
+            URL="$(printf '%s\n' "$URL" | sed -E 's/^\[[^]]*\]\((https?:\/\/[^)]*)\)$/\1/')"
+            URL="${URL#<}"
+            URL="${URL%>}"
+
+            COUNT=$((COUNT + 1))
+            echo ""
+            echo "=========================================="
+            echo "Processing Link #$COUNT: $URL"
+            echo "=========================================="
+
+            DOWNLOAD_OK=0
+
+            # בדיקה האם הקישור הוא קישור של Google Drive
+            if [[ "$URL" == *"drive.google.com"* ]]; then
+              echo "Identified Google Drive link. Using gdown..."
+              
+              # שימוש ב-gdown שמטפל אוטומטית באזהרות של קבצים כבדים
+              if gdown --fuzzy "$URL" -O downloads/ --remaining-ok; then
+                DOWNLOAD_OK=1
+              fi
+            else
+              echo "Using yt-dlp for standard video link..."
+              if yt-dlp \
+                --no-playlist \
+                --retries 5 \
+                --restrict-filenames \
+                --merge-output-format mp4 \
+                -f "bv*[height<=1080]+ba/b[height<=1080]/best" \
+                -o "downloads/%(title)s_${COUNT}.%(ext)s" \
+                "$URL"; then
+                DOWNLOAD_OK=1
+              fi
+            fi
+
+            if [ "$DOWNLOAD_OK" -eq 1 ]; then
+              SUCCESS=$((SUCCESS + 1))
+              echo "SUCCESS: Link #$COUNT downloaded."
+            else
+              FAILED=$((FAILED + 1))
+              echo "FAILED: Link #$COUNT."
+            fi
+
+          done < links.txt
+
+          echo ""
+          echo "=========================================="
+          echo "DOWNLOAD SUMMARY"
+          echo "=========================================="
+          echo "Links found: $COUNT | Successful: $SUCCESS | Failed: $FAILED"
+
+          if [ "$SUCCESS" -eq 0 ]; then
+            echo "ERROR: No videos downloaded successfully."
+            exit 1
+          fi
+
+          ls -lah downloads
+
+      - name: Generate release tag
+        id: release
+        shell: bash
+        run: |
+          TAG="release-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and Upload Files
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Release ${{ steps.release.outputs.tag }}"
+          generate_release_notes: true
+          # מעלה ישירות את קבצי הווידאו שהורדו (ללא צורך לדחוס ל-ZIP ענק שעלול להיכשל)
+          files: downloads/*
