@@ -71,8 +71,15 @@ jobs:
             if [[ "$URL" == *"drive.google.com"* ]]; then
               echo "Google Drive link detected. Downloading with gdown..."
               
-              if gdown "$URL" -O downloads/; then
+              if gdown --fuzzy "$URL" -O downloads/; then
                 DOWNLOAD_OK=1
+                
+                # המרת קבצי AVI, MPG ו-MPEG ל-MP4 במידה וירדו
+                echo "Checking for AVI/MPG files to convert..."
+                find downloads/ -type f \( -iname "*.avi" -o -iname "*.mpg" -o -iname "*.mpeg" \) | while read -r FILE; do
+                  echo "Converting $FILE to MP4..."
+                  ffmpeg -i "$FILE" -c:v libx264 -c:a aac -movflags +faststart "${FILE%.*}.mp4" -y && rm "$FILE"
+                done
               fi
             else
               # קישור רגיל (YouTube / אתרים אחרים)
