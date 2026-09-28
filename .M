@@ -1,8 +1,4 @@
-https://drive.google.com/uc?id=1Z761r-c7NCGxoO16f8wdoSaAyPqN52Zz&export=download
-https://drive.google.com/uc?id=1JBT2pQNi_GYne0JXx9CneKdPR0WzSQwt&export=download
-https://drive.google.com/uc?id=1zk3pm_NIptUYeKQgZvWYXhM_5E3Sxl7s&export=download
-https://drive.google.com/uc?id=1nwIs9Z0mSumYdskSfcqgEDiOFQa9Ez2B&export=download
-https://drive.google.com/uc?id=14IL9AjfmbWMHwMDZv7QS_9b4H5c8fZXF&export=download
+
 https://drive.google.com/uc?id=1TuLAeCHD38y_37Defk6d1ARqNhYQ1OQv&export=download
 https://drive.google.com/uc?id=19g09M0zOjIDieDLjezHPwt1QuFgYGyGx&export=download
 https://drive.google.com/uc?id=17tIa5s2tINv7luvnShniO-xmj7BTpw3J&export=download
