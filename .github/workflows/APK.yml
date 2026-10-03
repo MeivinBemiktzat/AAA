@@ -32,23 +32,31 @@ jobs:
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
           COUNT=0
           FAILED=0
+          MIN_SIZE=102400   # 100 KB: anything smaller is not a real APK
 
-          # Search sites, tried in order. Add or change sites here.
           SITES=(
             "https://www.apkmirror.com/?s="
             "https://apkpure.com/search?q="
             "https://www.apkmonk.com/search/?q="
           )
 
+          # Returns 0 only if the file is big enough and starts with the ZIP magic "PK"
+          is_real_apk() {
+            local f="$1"
+            [ -s "$f" ] || return 1
+            local size
+            size=$(stat -c%s "$f")
+            [ "$size" -lt "$MIN_SIZE" ] && return 1
+            local magic
+            magic=$(head -c 2 "$f")
+            [ "$magic" = "PK" ] || return 1
+            return 0
+          }
+
           while IFS= read -r NAME || [ -n "$NAME" ]; do
-
-            # Remove Windows CR
             NAME="${NAME%$'\r'}"
-
-            # Trim leading/trailing spaces
             NAME="$(echo "$NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
-            # Skip empty lines and comments
             [ -z "$NAME" ] && continue
             case "$NAME" in
               \#*) continue ;;
@@ -60,6 +68,7 @@ jobs:
 
             QUERY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$NAME")
             FOUND=""
+            TMP="tmp_candidate.apk"
 
             for SITE in "${SITES[@]}"; do
               SEARCH_URL="${SITE}${QUERY}"
@@ -68,50 +77,58 @@ jobs:
               PAGE=$(curl -sL --max-time 30 -A "$UA" "$SEARCH_URL" || true)
               [ -z "$PAGE" ] && continue
 
-              # Pull the first link that looks like an app detail page on this site
-              DETAIL=$(echo "$PAGE" \
+              ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
+
+              DETAILS=$(echo "$PAGE" \
                 | grep -oE 'href="[^"]+"' \
                 | sed 's/href="//;s/"$//' \
-                | grep -iE 'apk|download' \
-                | grep -v -iE 'search|login|register|javascript' \
-                | head -n 1 || true)
+                | grep -iE '/(apk|app|download)/' \
+                | grep -v -iE 'search|login|register|javascript|#' \
+                | head -n 5 || true)
 
-              [ -z "$DETAIL" ] && continue
+              for DETAIL in $DETAILS; do
+                case "$DETAIL" in
+                  http*) DETAIL_URL="$DETAIL" ;;
+                  /*)    DETAIL_URL="${ORIGIN}${DETAIL}" ;;
+                  *)     continue ;;
+                esac
 
-              # Make the URL absolute
-              case "$DETAIL" in
-                http*) DETAIL_URL="$DETAIL" ;;
-                /*)    DETAIL_URL="$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')$DETAIL" ;;
-                *)     continue ;;
-              esac
+                echo "Detail page: $DETAIL_URL"
+                DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "$DETAIL_URL" || true)
+                [ -z "$DETAIL_PAGE" ] && continue
 
-              echo "Detail page: $DETAIL_URL"
-              DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "$DETAIL_URL" || true)
-              [ -z "$DETAIL_PAGE" ] && continue
+                APK_LINK=$(echo "$DETAIL_PAGE" \
+                  | grep -oE 'href="[^"]+\.apk(\?[^"]*)?"' \
+                  | sed 's/href="//;s/"$//' \
+                  | head -n 1 || true)
 
-              # Look for a direct .apk link on the detail page
-              APK_LINK=$(echo "$DETAIL_PAGE" \
-                | grep -oE 'href="[^"]+\.apk[^"]*"' \
-                | sed 's/href="//;s/"$//' \
-                | head -n 1 || true)
+                [ -z "$APK_LINK" ] && continue
 
-              [ -z "$APK_LINK" ] && continue
+                case "$APK_LINK" in
+                  http*) CANDIDATE="$APK_LINK" ;;
+                  /*)    CANDIDATE="${ORIGIN}${APK_LINK}" ;;
+                  *)     continue ;;
+                esac
 
-              case "$APK_LINK" in
-                http*) FOUND="$APK_LINK" ;;
-                /*)    FOUND="$(echo "$DETAIL_URL" | sed -E 's#(https?://[^/]+).*#\1#')$APK_LINK" ;;
-              esac
+                rm -f "$TMP"
+                curl -L --fail --max-time 300 -A "$UA" -o "$TMP" "$CANDIDATE" || true
 
-              [ -n "$FOUND" ] && break
+                if is_real_apk "$TMP"; then
+                  FOUND="$CANDIDATE"
+                  echo "Valid APK link: $FOUND"
+                  break 2
+                else
+                  echo "Rejected (not a real APK): $CANDIDATE"
+                  rm -f "$TMP"
+                fi
+              done
             done
 
             if [ -z "$FOUND" ]; then
-              echo "WARNING: No APK found for: $NAME"
+              echo "WARNING: No valid APK found for: $NAME"
               FAILED=$((FAILED + 1))
               continue
             fi
-
-            echo "Found APK link: $FOUND"
 
             SAFE_NAME=$(echo "$NAME" | tr ' ' '_' | tr -cd 'A-Za-z0-9_.-')
             FILENAME="${SAFE_NAME}.apk"
@@ -121,16 +138,7 @@ jobs:
               N=$((N + 1))
             done
 
-            curl -L --fail --retry 3 --retry-all-errors -A "$UA" \
-              -o "downloads/$FILENAME" "$FOUND" || true
-
-            if [ ! -s "downloads/$FILENAME" ]; then
-              echo "WARNING: Download failed for: $NAME"
-              rm -f "downloads/$FILENAME"
-              FAILED=$((FAILED + 1))
-              continue
-            fi
-
+            mv "$TMP" "downloads/$FILENAME"
             echo "Saved: $FILENAME"
 
           done < links.txt
