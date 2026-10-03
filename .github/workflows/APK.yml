@@ -79,10 +79,14 @@ jobs:
 
               ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
 
+              # Keyword from the app name, without the version number (e.g. "Catan Classic 4.8.3" -> "catan-classic")
+              KEYWORD=$(echo "$NAME" | sed -E 's/[[:space:]]+[0-9][0-9.]*$//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
               DETAILS=$(echo "$PAGE" \
                 | grep -oE 'href="[^"]+"' \
                 | sed 's/href="//;s/"$//' \
                 | grep -iE '/(apk|app|download)/' \
+                | grep -i "$KEYWORD" \
                 | grep -v -iE 'search|login|register|javascript|#' \
                 | head -n 5 || true)
 
