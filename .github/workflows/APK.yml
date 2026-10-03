@@ -75,11 +75,16 @@ jobs:
               echo "Trying: $SEARCH_URL"
 
               PAGE=$(curl -sL --max-time 30 -A "$UA" "$SEARCH_URL" || true)
-              echo "--- DEBUG page start ($(echo -n "$PAGE" | wc -c) bytes) ---"
-              echo "$PAGE" | head -c 500
-              echo ""
-              echo "--- DEBUG end ---"
               [ -z "$PAGE" ] && continue
+
+              # Show Cloudflare/bot-block pages so we know the site is unusable
+              if echo "$PAGE" | grep -qi "just a moment"; then
+                echo "BLOCKED by Cloudflare: $SEARCH_URL"
+                continue
+              fi
+
+              echo "DEBUG: links containing keyword:"
+              echo "$PAGE" | grep -oE 'href="[^"]+"' | grep -i "$(echo "$NAME" | sed -E 's/[[:space:]]+[0-9][0-9.]*$//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')" | head -n 10 || true
 
               ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
 
