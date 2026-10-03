@@ -40,17 +40,13 @@ jobs:
             "https://www.apkmonk.com/search/?q="
           )
 
-          # Returns 0 only if the file is big enough and starts with the ZIP magic "PK"
-          is_real_apk() {
-            local f="$1"
-            [ -s "$f" ] || return 1
-            local size
-            size=$(stat -c%s "$f")
-            [ "$size" -lt "$MIN_SIZE" ] && return 1
-            local magic
-            magic=$(head -c 2 "$f")
-            [ "$magic" = "PK" ] || return 1
-            return 0
+          # Reads only the first 8 bytes of a URL (like probeFile in lib/net.js).
+          # A real APK/XAPK starts with the ZIP signature "PK"; HTML block pages do not.
+          probe_apk_url() {
+            local url="$1"
+            local head
+            head=$(curl -sL --max-time 25 -r 0-7 -A "$UA" "$url" | head -c 2 | od -An -tx1 | tr -d ' \n')
+            [ "$head" = "504b" ]
           }
 
           while IFS= read -r NAME || [ -n "$NAME" ]; do
@@ -66,7 +62,18 @@ jobs:
             echo "=============================="
             echo "Searching #$COUNT: $NAME"
 
-            QUERY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$NAME")
+            # Format in links.txt: "Display name | com.package.id"
+            PKG="${NAME#*|}"
+            PKG="$(echo "$PKG" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            DISPLAY="${NAME%%|*}"
+            DISPLAY="$(echo "$DISPLAY" | sed 's/[[:space:]]*$//')"
+            if [ "$PKG" = "$NAME" ] || [ -z "$PKG" ]; then
+              echo "WARNING: line must be 'Name | package.id': $NAME"
+              FAILED=$((FAILED + 1))
+              continue
+            fi
+
+            QUERY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$PKG")
             FOUND=""
             TMP="tmp_candidate.apk"
 
@@ -83,56 +90,55 @@ jobs:
                 continue
               fi
 
-              echo "DEBUG: links containing keyword:"
-              echo "$PAGE" | grep -oE 'href="[^"]+"' | grep -i "$(echo "$NAME" | sed -E 's/[[:space:]]+[0-9][0-9.]*$//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')" | head -n 10 || true
-
               ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
 
-              # Keyword from the app name, without the version number (e.g. "Catan Classic 4.8.3" -> "catan-classic")
-              KEYWORD=$(echo "$NAME" | sed -E 's/[[:space:]]+[0-9][0-9.]*$//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-
+              # Candidate app pages from the results (apkmirror /apk/<dev>/<app>/...)
               DETAILS=$(echo "$PAGE" \
-                | grep -oE 'href="[^"]+"' \
+                | grep -oE 'href="/apk/[^"]+"' \
                 | sed 's/href="//;s/"$//' \
-                | grep -iE '/(apk|app|download)/' \
-                | grep -i "$KEYWORD" \
-                | grep -v -iE 'search|login|register|javascript|#' \
-                | head -n 5 || true)
+                | grep -v -iE 'search|login|register|javascript|#|/apk/[^/]+/$' \
+                | sed 's/\/$//' | sort -u | head -n 5 || true)
 
               for DETAIL in $DETAILS; do
-                case "$DETAIL" in
-                  http*) DETAIL_URL="$DETAIL" ;;
-                  /*)    DETAIL_URL="${ORIGIN}${DETAIL}" ;;
-                  *)     continue ;;
-                esac
-
+                DETAIL_URL="${ORIGIN}${DETAIL}/"
                 echo "Detail page: $DETAIL_URL"
                 DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "$DETAIL_URL" || true)
                 [ -z "$DETAIL_PAGE" ] && continue
 
-                APK_LINK=$(echo "$DETAIL_PAGE" \
-                  | grep -oE 'href="[^"]+\.apk(\?[^"]*)?"' \
+                # Confirm this app page is really for our package (like apkmirror.js hasPackage)
+                PKG_ESC=$(echo "$PKG" | sed 's/\./\\./g')
+                if ! echo "$DETAIL_PAGE" | grep -qE "details\?id=${PKG_ESC}(\"|&)"; then
+                  echo "Skipped (package $PKG not on this page)"
+                  continue
+                fi
+
+                # The variant list: take the first download-page link (like parseVariantRows)
+                VARIANT=$(echo "$DETAIL_PAGE" \
+                  | grep -oE 'href="/apk/[^"]+-download/"' \
                   | sed 's/href="//;s/"$//' \
                   | head -n 1 || true)
+                [ -z "$VARIANT" ] && continue
 
-                [ -z "$APK_LINK" ] && continue
+                VARIANT_PAGE=$(curl -sL --max-time 30 -A "$UA" "${ORIGIN}${VARIANT}" || true)
+                # The real file is behind the downloadButton (like apkmirror.js resolve)
+                BTN=$(echo "$VARIANT_PAGE" | grep -oE '<a[^>]*class="[^"]*downloadButton[^"]*"[^>]*>' | head -n 1 || true)
+                HREF=$(echo "$BTN" | grep -oE 'href="[^"]+"' | sed 's/href="//;s/"$//' | sed 's/&amp;/\&/g')
+                [ -z "$HREF" ] && continue
 
-                case "$APK_LINK" in
-                  http*) CANDIDATE="$APK_LINK" ;;
-                  /*)    CANDIDATE="${ORIGIN}${APK_LINK}" ;;
+                case "$HREF" in
+                  http*) CANDIDATE="$HREF" ;;
+                  /*)    CANDIDATE="${ORIGIN}${HREF}" ;;
                   *)     continue ;;
                 esac
 
-                rm -f "$TMP"
-                curl -L --fail --max-time 300 -A "$UA" -o "$TMP" "$CANDIDATE" || true
-
-                if is_real_apk "$TMP"; then
+                if probe_apk_url "$CANDIDATE"; then
+                  rm -f "$TMP"
+                  curl -L --fail --max-time 300 -A "$UA" -o "$TMP" "$CANDIDATE" || true
                   FOUND="$CANDIDATE"
                   echo "Valid APK link: $FOUND"
                   break 2
                 else
-                  echo "Rejected (not a real APK): $CANDIDATE"
-                  rm -f "$TMP"
+                  echo "Rejected (not a ZIP/APK): $CANDIDATE"
                 fi
               done
             done
@@ -143,7 +149,7 @@ jobs:
               continue
             fi
 
-            SAFE_NAME=$(echo "$NAME" | tr ' ' '_' | tr -cd 'A-Za-z0-9_.-')
+            SAFE_NAME=$(echo "$DISPLAY" | tr ' ' '_' | tr -cd 'A-Za-z0-9_.-')
             FILENAME="${SAFE_NAME}.apk"
             N=1
             while [ -e "downloads/$FILENAME" ]; do
