@@ -35,7 +35,7 @@ jobs:
           MIN_SIZE=102400   # 100 KB: anything smaller is not a real APK
 
           SITES=(
-            "https://www.apkmirror.com/?s="
+            "https://www.apkmirror.com/?post_type=app_release&searchtype=apk&s="
             "https://apkpure.com/search?q="
             "https://www.apkmonk.com/search/?q="
           )
@@ -62,16 +62,14 @@ jobs:
             echo "=============================="
             echo "Searching #$COUNT: $NAME"
 
-            # Format in links.txt: "Display name | com.package.id"
-            PKG="${NAME#*|}"
-            PKG="$(echo "$PKG" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            DISPLAY="${NAME%%|*}"
-            DISPLAY="$(echo "$DISPLAY" | sed 's/[[:space:]]*$//')"
-            if [ "$PKG" = "$NAME" ] || [ -z "$PKG" ]; then
-              echo "WARNING: line must be 'Name | package.id': $NAME"
+            # links.txt holds one package id per line, e.g. com.exozet.android.catan
+            PKG="$NAME"
+            if ! echo "$PKG" | grep -qE '^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$'; then
+              echo "WARNING: not a package id (expected like com.example.app): $NAME"
               FAILED=$((FAILED + 1))
               continue
             fi
+            DISPLAY="$PKG"
 
             QUERY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$PKG")
             FOUND=""
@@ -92,32 +90,42 @@ jobs:
 
               ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
 
-              # Candidate app pages from the results (apkmirror /apk/<dev>/<app>/...)
-              DETAILS=$(echo "$PAGE" \
-                | grep -oE 'href="/apk/[^"]+"' \
-                | sed 's/href="//;s/"$//' \
-                | grep -v -iE 'search|login|register|javascript|#|/apk/[^/]+/$' \
-                | sed 's/\/$//' | sort -u | head -n 5 || true)
+              # Release links from the results, the way apkmirror.js list() reads them
+              RELEASES=$(echo "$PAGE" \
+                | grep -oE 'class="fontBlack" href="/apk/[^"]+/"' \
+                | sed -E 's/.*href="([^"]+)"/\1/' || true)
 
-              for DETAIL in $DETAILS; do
-                DETAIL_URL="${ORIGIN}${DETAIL}/"
-                echo "Detail page: $DETAIL_URL"
-                DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "$DETAIL_URL" || true)
-                [ -z "$DETAIL_PAGE" ] && continue
+              # Group by app: /apk/<dev>/<app>/ (first 3 apps, as in apkmirror.js)
+              APP_BASES=$(echo "$RELEASES" \
+                | sed -E 's#^(/apk/[^/]+/[^/]+/)[^/]+/$#\1#' \
+                | awk '!seen[$0]++' | head -n 3 || true)
 
-                # Confirm this app page is really for our package (like apkmirror.js hasPackage)
+              for BASE in $APP_BASES; do
+                # Check the first release of this app for our exact package (hasPackage)
+                FIRST=$(echo "$RELEASES" | grep -F "$BASE" | head -n 1 || true)
+                [ -z "$FIRST" ] && continue
+                echo "Checking app: ${ORIGIN}${BASE}"
+                PAGE_FIRST=$(curl -sL --max-time 30 -A "$UA" "${ORIGIN}${FIRST}" || true)
+                [ -z "$PAGE_FIRST" ] && continue
+
                 PKG_ESC=$(echo "$PKG" | sed 's/\./\\./g')
-                if ! echo "$DETAIL_PAGE" | grep -qE "details\?id=${PKG_ESC}(\"|&)"; then
-                  echo "Skipped (package $PKG not on this page)"
+                if ! echo "$PAGE_FIRST" | grep -qE "details\?id=${PKG_ESC}(\"|&)"; then
+                  echo "Skipped: package $PKG is not on this app"
                   continue
                 fi
+                echo "Package confirmed on: ${ORIGIN}${BASE}"
 
-                # The variant list: take the first download-page link (like parseVariantRows)
-                VARIANT=$(echo "$DETAIL_PAGE" \
-                  | grep -oE 'href="/apk/[^"]+-download/"' \
-                  | sed 's/href="//;s/"$//' \
-                  | head -n 1 || true)
-                [ -z "$VARIANT" ] && continue
+                # Every release of this app, newest first (up to 3 releases)
+                for REL in $(echo "$RELEASES" | grep -F "$BASE" | head -n 3); do
+                  DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "${ORIGIN}${REL}" || true)
+                  [ -z "$DETAIL_PAGE" ] && continue
+
+                  # The variant list: download-page links (like parseVariantRows)
+                  VARIANT=$(echo "$DETAIL_PAGE" \
+                    | grep -oE 'href="/apk/[^"]+-download/"' \
+                    | sed 's/href="//;s/"$//' \
+                    | head -n 1 || true)
+                  [ -z "$VARIANT" ] && continue
 
                 VARIANT_PAGE=$(curl -sL --max-time 30 -A "$UA" "${ORIGIN}${VARIANT}" || true)
                 # The real file is behind the downloadButton (like apkmirror.js resolve)
@@ -136,10 +144,11 @@ jobs:
                   curl -L --fail --max-time 300 -A "$UA" -o "$TMP" "$CANDIDATE" || true
                   FOUND="$CANDIDATE"
                   echo "Valid APK link: $FOUND"
-                  break 2
+                  break 3
                 else
                   echo "Rejected (not a ZIP/APK): $CANDIDATE"
                 fi
+              done
               done
             done
 
