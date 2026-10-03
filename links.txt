@@ -1,1 +1,1 @@
-Catan | com.exozet.android.catan
+com.exozet.android.catan
