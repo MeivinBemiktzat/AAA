@@ -1,0 +1,172 @@
+name: Search APKs by Name and Create Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          mkdir -p downloads
+          sudo apt-get update -y
+          sudo apt-get install -y zip unzip
+
+      - name: Search and download APKs
+        run: |
+          set -e
+
+          if [ ! -f links.txt ]; then
+            echo "ERROR: links.txt was not found!"
+            exit 1
+          fi
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          COUNT=0
+          FAILED=0
+
+          # Search sites, tried in order. Add or change sites here.
+          SITES=(
+            "https://www.apkmirror.com/?s="
+            "https://apkpure.com/search?q="
+            "https://www.apkmonk.com/search/?q="
+          )
+
+          while IFS= read -r NAME || [ -n "$NAME" ]; do
+
+            # Remove Windows CR
+            NAME="${NAME%$'\r'}"
+
+            # Trim leading/trailing spaces
+            NAME="$(echo "$NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            # Skip empty lines and comments
+            [ -z "$NAME" ] && continue
+            case "$NAME" in
+              \#*) continue ;;
+            esac
+
+            COUNT=$((COUNT + 1))
+            echo "=============================="
+            echo "Searching #$COUNT: $NAME"
+
+            QUERY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$NAME")
+            FOUND=""
+
+            for SITE in "${SITES[@]}"; do
+              SEARCH_URL="${SITE}${QUERY}"
+              echo "Trying: $SEARCH_URL"
+
+              PAGE=$(curl -sL --max-time 30 -A "$UA" "$SEARCH_URL" || true)
+              [ -z "$PAGE" ] && continue
+
+              # Pull the first link that looks like an app detail page on this site
+              DETAIL=$(echo "$PAGE" \
+                | grep -oE 'href="[^"]+"' \
+                | sed 's/href="//;s/"$//' \
+                | grep -iE 'apk|download' \
+                | grep -v -iE 'search|login|register|javascript' \
+                | head -n 1 || true)
+
+              [ -z "$DETAIL" ] && continue
+
+              # Make the URL absolute
+              case "$DETAIL" in
+                http*) DETAIL_URL="$DETAIL" ;;
+                /*)    DETAIL_URL="$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')$DETAIL" ;;
+                *)     continue ;;
+              esac
+
+              echo "Detail page: $DETAIL_URL"
+              DETAIL_PAGE=$(curl -sL --max-time 30 -A "$UA" "$DETAIL_URL" || true)
+              [ -z "$DETAIL_PAGE" ] && continue
+
+              # Look for a direct .apk link on the detail page
+              APK_LINK=$(echo "$DETAIL_PAGE" \
+                | grep -oE 'href="[^"]+\.apk[^"]*"' \
+                | sed 's/href="//;s/"$//' \
+                | head -n 1 || true)
+
+              [ -z "$APK_LINK" ] && continue
+
+              case "$APK_LINK" in
+                http*) FOUND="$APK_LINK" ;;
+                /*)    FOUND="$(echo "$DETAIL_URL" | sed -E 's#(https?://[^/]+).*#\1#')$APK_LINK" ;;
+              esac
+
+              [ -n "$FOUND" ] && break
+            done
+
+            if [ -z "$FOUND" ]; then
+              echo "WARNING: No APK found for: $NAME"
+              FAILED=$((FAILED + 1))
+              continue
+            fi
+
+            echo "Found APK link: $FOUND"
+
+            SAFE_NAME=$(echo "$NAME" | tr ' ' '_' | tr -cd 'A-Za-z0-9_.-')
+            FILENAME="${SAFE_NAME}.apk"
+            N=1
+            while [ -e "downloads/$FILENAME" ]; do
+              FILENAME="${SAFE_NAME}_${N}.apk"
+              N=$((N + 1))
+            done
+
+            curl -L --fail --retry 3 --retry-all-errors -A "$UA" \
+              -o "downloads/$FILENAME" "$FOUND" || true
+
+            if [ ! -s "downloads/$FILENAME" ]; then
+              echo "WARNING: Download failed for: $NAME"
+              rm -f "downloads/$FILENAME"
+              FAILED=$((FAILED + 1))
+              continue
+            fi
+
+            echo "Saved: $FILENAME"
+
+          done < links.txt
+
+          echo "=============================="
+          echo "Processed $COUNT apps, failed $FAILED."
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No app names found in links.txt!"
+            exit 1
+          fi
+
+          if [ -z "$(ls -A downloads)" ]; then
+            echo "ERROR: No APKs were downloaded."
+            exit 1
+          fi
+
+      - name: Create APP.ZIP
+        run: |
+          cd downloads
+          zip -r ../APP.ZIP .
+          cd ..
+          echo "APP.ZIP created:"
+          unzip -l APP.ZIP
+
+      - name: Generate release tag
+        id: release
+        run: |
+          TAG="release-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Creating release: $TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Release ${{ steps.release.outputs.tag }}"
+          generate_release_notes: true
+          files: APP.ZIP
