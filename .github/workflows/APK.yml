@@ -75,6 +75,10 @@ jobs:
               echo "Trying: $SEARCH_URL"
 
               PAGE=$(curl -sL --max-time 30 -A "$UA" "$SEARCH_URL" || true)
+              echo "--- DEBUG page start ($(echo -n "$PAGE" | wc -c) bytes) ---"
+              echo "$PAGE" | head -c 500
+              echo ""
+              echo "--- DEBUG end ---"
               [ -z "$PAGE" ] && continue
 
               ORIGIN=$(echo "$SITE" | sed -E 's#(https?://[^/]+).*#\1#')
