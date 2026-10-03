@@ -19,6 +19,8 @@ jobs:
           mkdir -p downloads
           sudo apt-get update -y
           sudo apt-get install -y zip unzip
+          pip install playwright
+          python3 -m playwright install --with-deps chromium
 
       - name: Search and download APKs
         run: |
@@ -40,14 +42,48 @@ jobs:
             "https://www.apkmonk.com/search/?q="
           )
 
-          # Reads only the first 8 bytes of a URL (like probeFile in lib/net.js).
-          # A real APK/XAPK starts with the ZIP signature "PK"; HTML block pages do not.
-          probe_apk_url() {
-            local url="$1"
-            local head
-            head=$(curl -sL --max-time 25 -r 0-7 -A "$UA" "$url" | head -c 2 | od -An -tx1 | tr -d ' \n')
-            [ "$head" = "504b" ]
+          # A real APK/XAPK is a ZIP file: big enough and starts with "PK" (504b).
+          # HTML block pages fail this check.
+          is_real_apk_file() {
+            local f="$1"
+            [ -s "$f" ] || return 1
+            [ "$(stat -c%s "$f")" -ge "$MIN_SIZE" ] || return 1
+            [ "$(head -c 2 "$f" | od -An -tx1 | tr -d ' \n')" = "504b" ]
           }
+
+          # Browser helper (same idea as downloadViaTab in the extension's background.js):
+          # open the page in a real Chromium, click downloadButton, save the file.
+          cat > fetch_browser.py <<'PYEOF'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          url, out = sys.argv[1], sys.argv[2]
+          UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              ctx = browser.new_context(user_agent=UA, accept_downloads=True)
+              page = ctx.new_page()
+              try:
+                  page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                  btn = page.locator("a.downloadButton").first
+                  if btn.count() == 0:
+                      print(f"no downloadButton on page: {page.url}")
+                      sys.exit(2)
+                  with page.expect_download(timeout=90000) as info:
+                      btn.click()
+                  info.value.save_as(out)
+                  print(f"saved {out}")
+              except Exception as e:
+                  print(f"browser download failed: {e}")
+                  try:
+                      print(f"last page: {page.url}")
+                  except Exception:
+                      pass
+                  sys.exit(1)
+              finally:
+                  browser.close()
+          PYEOF
 
           while IFS= read -r NAME || [ -n "$NAME" ]; do
             NAME="${NAME%$'\r'}"
@@ -127,26 +163,18 @@ jobs:
                     | head -n 1 || true)
                   [ -z "$VARIANT" ] && continue
 
-                VARIANT_PAGE=$(curl -sL --max-time 30 -A "$UA" "${ORIGIN}${VARIANT}" || true)
-                # The real file is behind the downloadButton (like apkmirror.js resolve)
-                BTN=$(echo "$VARIANT_PAGE" | grep -oE '<a[^>]*class="[^"]*downloadButton[^"]*"[^>]*>' | head -n 1 || true)
-                HREF=$(echo "$BTN" | grep -oE 'href="[^"]+"' | sed 's/href="//;s/"$//' | sed 's/&amp;/\&/g')
-                [ -z "$HREF" ] && continue
-
-                case "$HREF" in
-                  http*) CANDIDATE="$HREF" ;;
-                  /*)    CANDIDATE="${ORIGIN}${HREF}" ;;
-                  *)     continue ;;
-                esac
-
-                if probe_apk_url "$CANDIDATE"; then
-                  rm -f "$TMP"
-                  curl -L --fail --max-time 300 -A "$UA" -o "$TMP" "$CANDIDATE" || true
-                  FOUND="$CANDIDATE"
-                  echo "Valid APK link: $FOUND"
+                # APKMirror's file only starts inside a real browser, so the browser
+                # clicks the downloadButton and saves the file (see fetch_browser.py).
+                VARIANT_URL="${ORIGIN}${VARIANT}"
+                echo "Browser download: $VARIANT_URL"
+                rm -f "$TMP"
+                if python3 fetch_browser.py "$VARIANT_URL" "$TMP" && is_real_apk_file "$TMP"; then
+                  FOUND="$VARIANT_URL"
+                  echo "Valid APK downloaded in browser: $FOUND"
                   break 3
                 else
-                  echo "Rejected (not a ZIP/APK): $CANDIDATE"
+                  echo "Browser download failed for: $VARIANT_URL"
+                  rm -f "$TMP"
                 fi
               done
               done
