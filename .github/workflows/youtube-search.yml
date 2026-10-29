@@ -90,7 +90,7 @@ jobs:
 
                   try:
                       data = ydl.extract_info(
-                          f"ytsearch20:{name}",
+                          f"ytsearch30:{name}",
                           download=False
                       )
 
