@@ -1,4 +1,3 @@
-```yaml
 name: YouTube Video Finder
 
 on:
@@ -182,4 +181,3 @@ jobs:
             git commit -m "Update YouTube video links"
             git push
           fi
-```
