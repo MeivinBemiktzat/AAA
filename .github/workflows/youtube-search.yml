@@ -131,7 +131,7 @@ jobs:
                           reverse=True
                       )
 
-                      top_videos = candidates[:10]
+                      top_videos = candidates[:20]
 
                       if not top_videos:
                           results.append("לא נמצאו תוצאות.\n")
