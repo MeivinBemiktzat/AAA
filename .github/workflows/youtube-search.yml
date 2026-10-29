@@ -1,3 +1,4 @@
+```yaml
 name: YouTube Video Finder
 
 on:
@@ -31,7 +32,8 @@ jobs:
           python <<'PYTHON'
           import yt_dlp
           import time
-          import difflib
+          import re
+          from difflib import SequenceMatcher
           from pathlib import Path
 
           input_file = Path("videos.txt")
@@ -53,25 +55,49 @@ jobs:
               "skip_download": True,
               "ignoreerrors": True,
               "retries": 3,
+              "socket_timeout": 30,
           }
+
+          def normalize(text):
+              text = text.lower()
+              text = re.sub(r"[^\w\s]", " ", text)
+              return " ".join(text.split())
+
+          def similarity(query, title):
+              q = normalize(query)
+              t = normalize(title)
+
+              direct = SequenceMatcher(None, q, t).ratio()
+
+              q_words = set(q.split())
+              t_words = set(t.split())
+
+              if not q_words or not t_words:
+                  return direct
+
+              overlap = len(q_words & t_words) / len(q_words)
+
+              return 0.65 * direct + 0.35 * overlap
 
           results = []
 
           with yt_dlp.YoutubeDL(options) as ydl:
-
               for index, name in enumerate(names, 1):
-
                   print(f"[{index}/{len(names)}] Searching: {name}")
+
+                  results.append("=" * 70)
+                  results.append(f"חיפוש: {name}")
+                  results.append("=" * 70)
 
                   try:
                       data = ydl.extract_info(
-                          f"ytsearch10:{name}",
+                          f"ytsearch20:{name}",
                           download=False
                       )
 
                       videos = data.get("entries", []) if data else []
-
                       candidates = []
+                      seen_ids = set()
 
                       for video in videos:
                           if not video:
@@ -83,49 +109,55 @@ jobs:
                           if not title or not video_id:
                               continue
 
-                          similarity = difflib.SequenceMatcher(
-                              None,
-                              name.lower(),
-                              title.lower()
-                          ).ratio()
+                          if video_id in seen_ids:
+                              continue
+
+                          seen_ids.add(video_id)
+
+                          score = similarity(name, title)
 
                           candidates.append({
                               "title": title,
                               "id": video_id,
-                              "score": similarity
+                              "score": score,
+                              "channel": (
+                                  video.get("channel")
+                                  or video.get("uploader")
+                                  or "לא ידוע"
+                              ),
                           })
 
-                      if candidates:
+                      candidates.sort(
+                          key=lambda video: video["score"],
+                          reverse=True
+                      )
 
-                          best = max(
-                              candidates,
-                              key=lambda x: x["score"]
-                          )
+                      top_videos = candidates[:10]
 
+                      if not top_videos:
+                          results.append("לא נמצאו תוצאות.\n")
+                          continue
+
+                      for rank, video in enumerate(top_videos, 1):
                           url = (
                               "https://www.youtube.com/watch?v="
-                              + best["id"]
+                              + video["id"]
                           )
 
+                          results.append(f"\n{rank}. {video['title']}")
+                          results.append(f"ערוץ: {video['channel']}")
+                          results.append(f"קישור: {url}")
                           results.append(
-                              f"{name}\n"
-                              f"נמצא: {best['title']}\n"
-                              f"קישור: {url}\n"
+                              f"דמיון לכותרת: {video['score']:.0%}"
                           )
 
-                          print(f"Found: {url}")
+                          print(f"  {rank}. {video['title']}")
 
-                      else:
-                          results.append(
-                              f"{name}\nלא נמצא סרטון\n"
-                          )
+                      results.append("")
 
-                  except Exception as e:
-                      print(f"Error: {e}")
-
-                      results.append(
-                          f"{name}\nשגיאה בחיפוש\n"
-                      )
+                  except Exception as error:
+                      print(f"Search failed for {name}: {error}")
+                      results.append(f"שגיאה בחיפוש: {error}\n")
 
                   time.sleep(2)
 
@@ -134,7 +166,7 @@ jobs:
               encoding="utf-8"
           )
 
-          print("Results saved to links.txt")
+          print(f"Saved results to {output_file}")
           PYTHON
 
       - name: Commit results to repository
@@ -150,3 +182,4 @@ jobs:
             git commit -m "Update YouTube video links"
             git push
           fi
+```
