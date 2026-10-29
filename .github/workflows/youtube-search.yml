@@ -1,0 +1,152 @@
+name: YouTube Video Finder
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'videos.txt'
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
+
+      - name: Search YouTube
+        shell: bash
+        run: |
+          python <<'PYTHON'
+          import yt_dlp
+          import time
+          import difflib
+          from pathlib import Path
+
+          input_file = Path("videos.txt")
+          output_file = Path("links.txt")
+
+          if not input_file.exists():
+              raise SystemExit("videos.txt not found")
+
+          names = [
+              line.strip()
+              for line in input_file.read_text(encoding="utf-8-sig").splitlines()
+              if line.strip()
+          ]
+
+          options = {
+              "quiet": True,
+              "no_warnings": True,
+              "extract_flat": True,
+              "skip_download": True,
+              "ignoreerrors": True,
+              "retries": 3,
+          }
+
+          results = []
+
+          with yt_dlp.YoutubeDL(options) as ydl:
+
+              for index, name in enumerate(names, 1):
+
+                  print(f"[{index}/{len(names)}] Searching: {name}")
+
+                  try:
+                      data = ydl.extract_info(
+                          f"ytsearch10:{name}",
+                          download=False
+                      )
+
+                      videos = data.get("entries", []) if data else []
+
+                      candidates = []
+
+                      for video in videos:
+                          if not video:
+                              continue
+
+                          title = video.get("title", "")
+                          video_id = video.get("id")
+
+                          if not title or not video_id:
+                              continue
+
+                          similarity = difflib.SequenceMatcher(
+                              None,
+                              name.lower(),
+                              title.lower()
+                          ).ratio()
+
+                          candidates.append({
+                              "title": title,
+                              "id": video_id,
+                              "score": similarity
+                          })
+
+                      if candidates:
+
+                          best = max(
+                              candidates,
+                              key=lambda x: x["score"]
+                          )
+
+                          url = (
+                              "https://www.youtube.com/watch?v="
+                              + best["id"]
+                          )
+
+                          results.append(
+                              f"{name}\n"
+                              f"נמצא: {best['title']}\n"
+                              f"קישור: {url}\n"
+                          )
+
+                          print(f"Found: {url}")
+
+                      else:
+                          results.append(
+                              f"{name}\nלא נמצא סרטון\n"
+                          )
+
+                  except Exception as e:
+                      print(f"Error: {e}")
+
+                      results.append(
+                          f"{name}\nשגיאה בחיפוש\n"
+                      )
+
+                  time.sleep(2)
+
+          output_file.write_text(
+              "\n".join(results),
+              encoding="utf-8"
+          )
+
+          print("Results saved to links.txt")
+          PYTHON
+
+      - name: Commit results to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add links.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update YouTube video links"
+            git push
+          fi
