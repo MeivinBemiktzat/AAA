@@ -1,1 +1,1 @@
-https://eb5e7388c3df147b74dd2379b7cf8323.r2.cloudflarestorage.com/downloadprod/wp-content/uploads/2026/10/23/6acc991bb6d60/com.hyperkani.stuntcarextreme_1.137-594_2arch_2feat_b2da3b2b764d23d3fd3e78562b5b64a8_apkmirror.com.apkm?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=72a5ba3a0b8a601e535d5525f12f8177%2F20261022%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20261022T200444Z&X-Amz-SignedHeaders=host&X-Amz-Expires=3600&X-Amz-Signature=c81362b3f408a22979a85b071f09123ba4161d61f978aadee4ac65c6d64edadc
+
