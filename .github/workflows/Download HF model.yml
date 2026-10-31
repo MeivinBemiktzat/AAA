@@ -38,10 +38,25 @@ jobs:
         run: pip install -U "huggingface_hub[cli]"
 
       - name: Download model file from Hugging Face
+        env:
+          HF_REPO: ${{ inputs.hf_repo }}
+          HF_FILE: ${{ inputs.hf_file }}
         run: |
-          python -m huggingface_hub.commands.huggingface_cli download \
-            "${{ inputs.hf_repo }}" "${{ inputs.hf_file }}" \
-            --local-dir ./download --local-dir-use-symlinks False
+          mkdir -p ./download
+          python3 - <<'PYEOF'
+          import os
+          from huggingface_hub import hf_hub_download
+
+          repo = os.environ["HF_REPO"]
+          filename = os.environ["HF_FILE"]
+
+          path = hf_hub_download(
+              repo_id=repo,
+              filename=filename,
+              local_dir="./download",
+          )
+          print(f"Downloaded to: {path}")
+          PYEOF
           ls -lh ./download
 
       - name: Split the file into chunks
