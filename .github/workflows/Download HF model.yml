@@ -29,12 +29,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           df -h
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Install huggingface_hub CLI
         run: pip install -U "huggingface_hub[cli]"
 
       - name: Download model file from Hugging Face
         run: |
-          huggingface-cli download "${{ inputs.hf_repo }}" "${{ inputs.hf_file }}" \
+          python -m huggingface_hub.commands.huggingface_cli download \
+            "${{ inputs.hf_repo }}" "${{ inputs.hf_file }}" \
             --local-dir ./download --local-dir-use-symlinks False
           ls -lh ./download
 
