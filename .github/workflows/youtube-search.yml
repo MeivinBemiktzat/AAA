@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: youtube-video-finder-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   search:
     runs-on: ubuntu-latest
@@ -16,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -32,6 +38,7 @@ jobs:
           import yt_dlp
           import time
           import re
+
           from difflib import SequenceMatcher
           from pathlib import Path
 
@@ -43,7 +50,9 @@ jobs:
 
           names = [
               line.strip()
-              for line in input_file.read_text(encoding="utf-8-sig").splitlines()
+              for line in input_file.read_text(
+                  encoding="utf-8-sig"
+              ).splitlines()
               if line.strip()
           ]
 
@@ -57,16 +66,26 @@ jobs:
               "socket_timeout": 30,
           }
 
+          # ---------------------------------------
+          # Normalize text
+          # ---------------------------------------
+
           def normalize(text):
               text = text.lower()
               text = re.sub(r"[^\w\s]", " ", text)
               return " ".join(text.split())
 
+          # ---------------------------------------
+          # Calculate similarity
+          # ---------------------------------------
+
           def similarity(query, title):
               q = normalize(query)
               t = normalize(title)
 
-              direct = SequenceMatcher(None, q, t).ratio()
+              direct = SequenceMatcher(
+                  None, q, t
+              ).ratio()
 
               q_words = set(q.split())
               t_words = set(t.split())
@@ -74,15 +93,115 @@ jobs:
               if not q_words or not t_words:
                   return direct
 
-              overlap = len(q_words & t_words) / len(q_words)
+              overlap = (
+                  len(q_words & t_words)
+                  / len(q_words)
+              )
 
-              return 0.65 * direct + 0.35 * overlap
+              return (
+                  0.65 * direct
+                  + 0.35 * overlap
+              )
+
+          # ---------------------------------------
+          # Format video duration
+          # ---------------------------------------
+
+          def format_duration(seconds):
+              if seconds is None:
+                  return "לא ידוע"
+
+              try:
+                  seconds = int(seconds)
+              except (ValueError, TypeError):
+                  return "לא ידוע"
+
+              hours, remainder = divmod(
+                  seconds, 3600
+              )
+
+              minutes, seconds = divmod(
+                  remainder, 60
+              )
+
+              if hours:
+                  return (
+                      f"{hours:02}:"
+                      f"{minutes:02}:"
+                      f"{seconds:02}"
+                  )
+
+              return (
+                  f"{minutes:02}:"
+                  f"{seconds:02}"
+              )
+
+          # ---------------------------------------
+          # Get accurate video duration
+          # ---------------------------------------
+
+          def get_video_duration(ydl, video):
+              duration = video.get("duration")
+
+              if duration is not None:
+                  return duration
+
+              video_id = video.get("id")
+
+              if not video_id:
+                  return None
+
+              url = (
+                  "https://www.youtube.com/watch?v="
+                  + video_id
+              )
+
+              try:
+                  # Force full extraction even though
+                  # search uses extract_flat=True.
+
+                  with yt_dlp.YoutubeDL({
+                      "quiet": True,
+                      "no_warnings": True,
+                      "extract_flat": False,
+                      "skip_download": True,
+                      "ignoreerrors": True,
+                      "retries": 2,
+                      "socket_timeout": 20,
+                  }) as full_ydl:
+
+                      info = full_ydl.extract_info(
+                          url,
+                          download=False
+                      )
+
+                      if info:
+                          return info.get("duration")
+
+              except Exception as error:
+                  print(
+                      f"Duration lookup failed "
+                      f"for {video_id}: {error}"
+                  )
+
+              return None
+
+          # ---------------------------------------
+          # Search videos
+          # ---------------------------------------
 
           results = []
 
           with yt_dlp.YoutubeDL(options) as ydl:
-              for index, name in enumerate(names, 1):
-                  print(f"[{index}/{len(names)}] Searching: {name}")
+
+              for index, name in enumerate(
+                  names, 1
+              ):
+
+                  print(
+                      f"\n[{index}/{len(names)}] "
+                      f"Searching: {name}"
+                  )
 
                   results.append("=" * 70)
                   results.append(f"חיפוש: {name}")
@@ -94,15 +213,23 @@ jobs:
                           download=False
                       )
 
-                      videos = data.get("entries", []) if data else []
+                      videos = (
+                          data.get("entries", [])
+                          if data else []
+                      )
+
                       candidates = []
                       seen_ids = set()
 
                       for video in videos:
+
                           if not video:
                               continue
 
-                          title = video.get("title", "")
+                          title = video.get(
+                              "title", ""
+                          )
+
                           video_id = video.get("id")
 
                           if not title or not video_id:
@@ -113,7 +240,9 @@ jobs:
 
                           seen_ids.add(video_id)
 
-                          score = similarity(name, title)
+                          score = similarity(
+                              name, title
+                          )
 
                           candidates.append({
                               "title": title,
@@ -124,52 +253,124 @@ jobs:
                                   or video.get("uploader")
                                   or "לא ידוע"
                               ),
+                              "duration": video.get(
+                                  "duration"
+                              ),
                           })
+
+                      # Sort by similarity
 
                       candidates.sort(
                           key=lambda video: video["score"],
                           reverse=True
                       )
 
-                      top_videos = candidates[:15]
+                      top_videos = candidates[:30]
 
                       if not top_videos:
-                          results.append("לא נמצאו תוצאות.\n")
+                          results.append(
+                              "לא נמצאו תוצאות.\n"
+                          )
                           continue
 
-                      for rank, video in enumerate(top_videos, 1):
+                      # ---------------------------------------
+                      # Process each video
+                      # ---------------------------------------
+
+                      for rank, video in enumerate(
+                          top_videos, 1
+                      ):
+
                           url = (
                               "https://www.youtube.com/watch?v="
                               + video["id"]
                           )
 
-                          results.append(f"\n{rank}. {video['title']}")
-                          results.append(f"ערוץ: {video['channel']}")
-                          results.append(f"קישור: {url}")
-                          results.append(
-                              f"דמיון לכותרת: {video['score']:.0%}"
+                          # Get duration
+
+                          duration = get_video_duration(
+                              ydl, video
                           )
 
-                          print(f"  {rank}. {video['title']}")
+                          formatted_duration = (
+                              format_duration(duration)
+                          )
+
+                          # Save result
+
+                          results.append(
+                              f"\n{rank}. {video['title']}"
+                          )
+
+                          results.append(
+                              f"ערוץ: {video['channel']}"
+                          )
+
+                          results.append(
+                              f"אורך הסרטון: "
+                              f"{formatted_duration}"
+                          )
+
+                          results.append(
+                              f"קישור: {url}"
+                          )
+
+                          results.append(
+                              f"דמיון לכותרת: "
+                              f"{video['score']:.0%}"
+                          )
+
+                          # Console output
+
+                          print(
+                              f"  {rank}. "
+                              f"{video['title']}"
+                          )
+
+                          print(
+                              f"      Duration: "
+                              f"{formatted_duration}"
+                          )
 
                       results.append("")
 
                   except Exception as error:
-                      print(f"Search failed for {name}: {error}")
-                      results.append(f"שגיאה בחיפוש: {error}\n")
+
+                      print(
+                          f"Search failed for "
+                          f"{name}: {error}"
+                      )
+
+                      results.append(
+                          f"שגיאה בחיפוש: {error}\n"
+                      )
 
                   time.sleep(2)
+
+          # ---------------------------------------
+          # Save results
+          # ---------------------------------------
 
           output_file.write_text(
               "\n".join(results),
               encoding="utf-8"
           )
 
-          print(f"Saved results to {output_file}")
+          print(
+              f"\nSaved results to {output_file}"
+          )
+
+          print(
+              f"Total searches: {len(names)}"
+          )
+
           PYTHON
 
       - name: Commit results to repository
+        shell: bash
         run: |
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -177,7 +378,31 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
-          else
-            git commit -m "Update YouTube video links"
-            git push
+            exit 0
           fi
+
+          git commit -m "Update YouTube video links and durations"
+
+          # Retry if remote branch was updated
+
+          for attempt in 1 2 3 4 5; do
+
+            echo "Push attempt $attempt"
+
+            if git push; then
+              echo "Successfully pushed results"
+              exit 0
+            fi
+
+            echo "Push failed, rebasing..."
+
+            git fetch origin
+
+            git rebase "origin/${GITHUB_REF_NAME}"
+
+            sleep 3
+
+          done
+
+          echo "Failed to push after 5 attempts"
+          exit 1
