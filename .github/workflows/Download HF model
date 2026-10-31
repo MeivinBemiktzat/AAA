@@ -1,0 +1,65 @@
+name: Download HF model and publish as GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      hf_repo:
+        description: "Hugging Face repo (e.g. mradermacher/dictalm2.0-instruct-GGUF)"
+        required: true
+        default: "mradermacher/dictalm2.0-instruct-GGUF"
+      hf_file:
+        description: "File name in that repo to download"
+        required: true
+        default: "dictalm2.0-instruct.Q4_K_M.gguf"
+      release_tag:
+        description: "Tag/name for the GitHub Release that will hold the split files"
+        required: true
+        default: "dictalm2.0-q4km"
+      split_size_mb:
+        description: "Size of each split chunk in MB (keep under 2000 to stay below the 2GB per-asset limit)"
+        required: true
+        default: "1800"
+
+jobs:
+  fetch-split-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install huggingface_hub CLI
+        run: pip install -U "huggingface_hub[cli]"
+
+      - name: Download model file from Hugging Face
+        run: |
+          huggingface-cli download "${{ inputs.hf_repo }}" "${{ inputs.hf_file }}" \
+            --local-dir ./download --local-dir-use-symlinks False
+          ls -lh ./download
+
+      - name: Split the file into chunks
+        run: |
+          mkdir -p ./parts
+          SRC="./download/${{ inputs.hf_file }}"
+          split -b "${{ inputs.split_size_mb }}m" -d -a 3 "$SRC" "./parts/${{ inputs.hf_file }}.part"
+          ls -lh ./parts
+
+      - name: Create checksum manifest
+        run: |
+          cd ./parts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release with split parts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_tag }}
+          body: |
+            Split parts of `${{ inputs.hf_file }}` from `${{ inputs.hf_repo }}`.
+            Rejoin on-device with:
+            `cat ${{ inputs.hf_file }}.part* > ${{ inputs.hf_file }}`
+            Verify with SHA256SUMS.txt before use.
+          files: |
+            ./parts/*
