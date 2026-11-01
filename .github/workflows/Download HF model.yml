@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       hf_repo:
-        description: "Hugging Face repo (e.g. mradermacher/dictalm2.0-instruct-GGUF)"
+        description: "Hugging Face repo (e.g. second-state/stable-diffusion-v1-5-GGUF)"
         required: true
-        default: "mradermacher/dictalm2.0-instruct-GGUF"
+        default: "second-state/stable-diffusion-v1-5-GGUF"
       hf_file:
         description: "File name in that repo to download"
         required: true
-        default: "dictalm2.0-instruct.Q4_K_M.gguf"
+        default: "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf"
       release_tag:
         description: "Tag/name for the GitHub Release that will hold the split files"
         required: true
-        default: "dictalm2.0-q4km"
+        default: "sd15-q8"
       split_size_mb:
         description: "Size of each split chunk in MB (keep under 2000 to stay below the 2GB per-asset limit)"
         required: true
