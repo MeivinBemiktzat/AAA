@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       hf_repo:
-        description: "Hugging Face repo (e.g. second-state/stable-diffusion-v1-5-GGUF)"
+        description: "Hugging Face repo"
         required: true
-        default: "second-state/stable-diffusion-v1-5-GGUF"
+        default: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
       hf_file:
-        description: "File name in that repo to download"
+        description: "File name to download, or 'all' to download and pack the full repository"
         required: true
-        default: "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf"
+        default: "all"
       release_tag:
-        description: "Tag/name for the GitHub Release that will hold the split files"
+        description: "Tag/name for the GitHub Release"
         required: true
-        default: "sd15-q8"
+        default: "qwen3-tts-0.6b"
       split_size_mb:
-        description: "Size of each split chunk in MB (keep under 2000 to stay below the 2GB per-asset limit)"
+        description: "Size of each split chunk in MB"
         required: true
         default: "1800"
 
@@ -40,33 +40,51 @@ jobs:
       - name: Install huggingface_hub CLI
         run: pip install -U "huggingface_hub[cli]"
 
-      - name: Download model file from Hugging Face
+      - name: Download model from Hugging Face
+        id: download_step
         env:
           HF_REPO: ${{ inputs.hf_repo }}
           HF_FILE: ${{ inputs.hf_file }}
         run: |
+          mkdir -p ./raw_download
           mkdir -p ./download
+
           python3 - <<'PYEOF'
           import os
-          from huggingface_hub import hf_hub_download
+          from huggingface_hub import hf_hub_download, snapshot_download
 
-          repo = os.environ["HF_REPO"]
-          filename = os.environ["HF_FILE"]
+          repo = os.environ["HF_REPO"].strip()
+          file_input = os.environ.get("HF_FILE", "all").strip()
 
-          path = hf_hub_download(
-              repo_id=repo,
-              filename=filename,
-              local_dir="./download",
-          )
-          print(f"Downloaded to: {path}")
+          if file_input.lower() in ["all", "*", ""]:
+              print(f"Downloading full repository: {repo}")
+              snapshot_download(repo_id=repo, local_dir="./raw_download")
+              mode = "repo"
+              target_file = "model.tar.gz"
+          else:
+              print(f"Downloading single file '{file_input}' from {repo}")
+              hf_hub_download(repo_id=repo, filename=file_input, local_dir="./download")
+              mode = "file"
+              target_file = file_input
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"mode={mode}\n")
+              f.write(f"target_file={target_file}\n")
           PYEOF
+
+          if [ "${{ steps.download_step.outputs.mode }}" = "repo" ]; then
+            echo "Packing repository into tar.gz..."
+            tar -czf "./download/${{ steps.download_step.outputs.target_file }}" -C ./raw_download .
+            rm -rf ./raw_download
+          fi
+
           ls -lh ./download
 
       - name: Split the file into chunks
         run: |
           mkdir -p ./parts
-          SRC="./download/${{ inputs.hf_file }}"
-          split -b "${{ inputs.split_size_mb }}m" -d -a 3 "$SRC" "./parts/${{ inputs.hf_file }}.part"
+          SRC="./download/${{ steps.download_step.outputs.target_file }}"
+          split -b "${{ inputs.split_size_mb }}m" -d -a 3 "$SRC" "./parts/${{ steps.download_step.outputs.target_file }}.part"
           ls -lh ./parts
 
       - name: Create checksum manifest
@@ -81,9 +99,12 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           name: ${{ inputs.release_tag }}
           body: |
-            Split parts of `${{ inputs.hf_file }}` from `${{ inputs.hf_repo }}`.
-            Rejoin on-device with:
-            `cat ${{ inputs.hf_file }}.part* > ${{ inputs.hf_file }}`
-            Verify with SHA256SUMS.txt before use.
+            Release files for `${{ inputs.hf_repo }}`.
+            
+            ### Restore on Windows (CMD):
+            ```cmd
+            copy /b ${{ steps.download_step.outputs.target_file }}.part* ${{ steps.download_step.outputs.target_file }}
+            tar -xzf ${{ steps.download_step.outputs.target_file }} -C ./model_folder
+            ```
           files: |
             ./parts/*
