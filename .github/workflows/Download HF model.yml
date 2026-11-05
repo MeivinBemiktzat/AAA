@@ -51,6 +51,7 @@ jobs:
 
           python3 - <<'PYEOF'
           import os
+          import subprocess
           from huggingface_hub import hf_hub_download, snapshot_download
 
           repo = os.environ["HF_REPO"].strip()
@@ -59,31 +60,36 @@ jobs:
           if file_input.lower() in ["all", "*", ""]:
               print(f"Downloading full repository: {repo}")
               snapshot_download(repo_id=repo, local_dir="./raw_download")
-              mode = "repo"
+              
+              print("Packing repository into tar.gz...")
+              subprocess.run(
+                  ["tar", "-czf", "./download/model.tar.gz", "-C", "./raw_download", "."],
+                  check=True
+              )
               target_file = "model.tar.gz"
           else:
               print(f"Downloading single file '{file_input}' from {repo}")
               hf_hub_download(repo_id=repo, filename=file_input, local_dir="./download")
-              mode = "file"
               target_file = file_input
 
+          print(f"Successfully prepared target file: {target_file}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"mode={mode}\n")
               f.write(f"target_file={target_file}\n")
           PYEOF
 
-          if [ "${{ steps.download_step.outputs.mode }}" = "repo" ]; then
-            echo "Packing repository into tar.gz..."
-            tar -czf "./download/${{ steps.download_step.outputs.target_file }}" -C ./raw_download .
-            rm -rf ./raw_download
-          fi
-
+          echo "Files in ./download:"
           ls -lh ./download
 
       - name: Split the file into chunks
         run: |
           mkdir -p ./parts
           SRC="./download/${{ steps.download_step.outputs.target_file }}"
+          
+          if [ ! -f "$SRC" ]; then
+            echo "Error: Target file $SRC does not exist!"
+            exit 1
+          fi
+
           split -b "${{ inputs.split_size_mb }}m" -d -a 3 "$SRC" "./parts/${{ steps.download_step.outputs.target_file }}.part"
           ls -lh ./parts
 
@@ -104,6 +110,7 @@ jobs:
             ### Restore on Windows (CMD):
             ```cmd
             copy /b ${{ steps.download_step.outputs.target_file }}.part* ${{ steps.download_step.outputs.target_file }}
+            mkdir model_folder
             tar -xzf ${{ steps.download_step.outputs.target_file }} -C ./model_folder
             ```
           files: |
