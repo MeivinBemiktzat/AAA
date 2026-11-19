@@ -1,1 +1,1 @@
-https://v0.app/api/v2/internal/chats/kTPzmuaAJTr/artifacts/5U9ppvc3QBZaz9VnnYCIXOpc/download?scope=hartks-projects-131c1dc3
+https://raw.githubusercontent.com/MeivinBemiktzat/project/refs/heads/main/public/gathering.png?token=GHSAT0AAAAAAERCKKRFPANNKY2NKNYXX5ME2X7CYOQ
