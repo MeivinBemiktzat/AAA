@@ -1,1 +1,1 @@
-https://v0.app/api/v2/internal/chats/kTPzmuaAJTr/artifacts/RQMWfQTXlNAIsmFMTu185U2S/download?format=zip
+https://v0.app/api/v2/internal/chats/kTPzmuaAJTr/artifacts/5U9ppvc3QBZaz9VnnYCIXOpc/download?scope=hartks-projects-131c1dc3
