@@ -1,0 +1,225 @@
+name: Black Cat Video Sync (VODOS-style)
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_size_gb:
+        description: "Maximum total video size in GB"
+        required: true
+        default: "1.8"
+        type: string
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: blackcat-video-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade requests
+
+      - name: Fetch Black Cat messages and download videos
+        env:
+          MAX_SIZE_GB: ${{ inputs.max_size_gb || '1.8' }}
+        shell: bash
+        run: |
+          python <<'PY'
+          import os
+          import re
+          import json
+          import time
+          import hashlib
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+          import requests
+
+          API = "https://black-cat.thechats.click/api/messages"
+          OUT = Path("downloads")
+          OUT.mkdir(exist_ok=True)
+          MAX_BYTES = int(float(os.environ.get("MAX_SIZE_GB", "1.8")) * 1024**3)
+          ALLOWED_HOSTS = {"black-cat.thechats.click", "cdn.thechats.click"}
+          session = requests.Session()
+          session.headers.update({"User-Agent": "VODOS-compatible-sync/1.0"})
+
+          print(f"Fetching messages: {API}")
+          response = session.get(API, timeout=(20, 90))
+          response.raise_for_status()
+          payload = response.json()
+
+          # VODOS consumes the API response as a message array.
+          messages = payload if isinstance(payload, list) else payload.get("messages", [])
+          if not isinstance(messages, list):
+              raise SystemExit("Unexpected API response: messages is not an array")
+
+          candidates = []
+          seen_urls = set()
+
+          for msg in messages:
+              if not isinstance(msg, dict) or msg.get("deleted") or msg.get("isAds"):
+                  continue
+
+              body = str(msg.get("text") or "")
+              urls = re.findall(r"\[video-embedded#\]\(([^)]+)\)", body)
+
+              file_info = msg.get("file") or {}
+              if isinstance(file_info, dict):
+                  filetype = str(file_info.get("filetype") or "").lower()
+                  file_url = file_info.get("url")
+                  if file_url and filetype in {"mp4", "mov", "webm", "m4v"}:
+                      urls.append(file_url)
+
+              for raw_url in urls:
+                  url = urljoin("https://black-cat.thechats.click/", str(raw_url).strip())
+                  parsed = urlparse(url)
+                  if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
+                      print(f"Skipping unsupported video host: {url}")
+                      continue
+                  if url in seen_urls:
+                      continue
+                  seen_urls.add(url)
+                  candidates.append({
+                      "url": url,
+                      "message_id": str(msg.get("id", "unknown")),
+                      "timestamp": str(msg.get("timestamp", "")),
+                  })
+
+          print(f"Messages scanned: {len(messages)}")
+          print(f"Unique video URLs found: {len(candidates)}")
+
+          total = 0
+          downloaded = 0
+          skipped = 0
+          failures = []
+          manifest = []
+
+          for index, item in enumerate(candidates, 1):
+              if total >= MAX_BYTES:
+                  print("Reached the configured size limit.")
+                  break
+
+              url = item["url"]
+              digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+              ext = Path(urlparse(url).path).suffix.lower()
+              if ext not in {".mp4", ".mov", ".webm", ".m4v"}:
+                  ext = ".mp4"
+              target = OUT / f"blackcat_{index:04d}_{digest}{ext}"
+
+              if target.exists():
+                  skipped += 1
+                  total += target.stat().st_size
+                  manifest.append({**item, "file": target.name, "bytes": target.stat().st_size})
+                  continue
+
+              remaining = MAX_BYTES - total
+              print(f"[{index}/{len(candidates)}] Downloading message {item['message_id']}")
+
+              try:
+                  with session.get(url, stream=True, timeout=(25, 180)) as r:
+                      r.raise_for_status()
+                      content_length = r.headers.get("Content-Length")
+                      if content_length and int(content_length) > remaining:
+                          print("Skipping: this file is larger than the remaining size budget.")
+                          continue
+
+                      written = 0
+                      with target.open("wb") as f:
+                          for chunk in r.iter_content(chunk_size=1024 * 1024):
+                              if not chunk:
+                                  continue
+                              if written + len(chunk) > remaining:
+                                  print("Stopping this file at the size limit; removing incomplete file.")
+                                  break
+                              f.write(chunk)
+                              written += len(chunk)
+
+                      if not written or (target.exists() and written + total > MAX_BYTES):
+                          target.unlink(missing_ok=True)
+                          continue
+
+                      total += written
+                      downloaded += 1
+                      manifest.append({**item, "file": target.name, "bytes": written})
+                      print(f"Saved {target.name}: {written / 1024**2:.1f} MB; total {total / 1024**3:.3f} GB")
+
+              except Exception as exc:
+                  target.unlink(missing_ok=True)
+                  failures.append({"url": url, "error": str(exc)})
+                  print(f"Download failed: {exc}")
+                  time.sleep(1)
+
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+          Path("download-report.json").write_text(
+              json.dumps({
+                  "messages_scanned": len(messages),
+                  "unique_video_urls": len(candidates),
+                  "downloaded": downloaded,
+                  "skipped_existing": skipped,
+                  "total_bytes": total,
+                  "limit_bytes": MAX_BYTES,
+                  "failures": failures,
+              }, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+
+          if downloaded == 0 and skipped == 0:
+              raise SystemExit("No videos were downloaded. Check API response and video URLs.")
+
+          print(f"Finished: {downloaded} downloaded, {skipped} existing, {total / 1024**3:.3f} GB total.")
+          PY
+
+      - name: Create APP.ZIP
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_STORED, ZIP_DEFLATED, ZIP64_LIMIT
+
+          files = sorted(p for p in Path("downloads").iterdir() if p.is_file())
+          if not files:
+              raise SystemExit("No downloaded files to package")
+
+          # Store video files without recompressing them; compress only the manifest.
+          with ZipFile("APP.ZIP", "w", allowZip64=True) as z:
+              for path in files:
+                  method = ZIP_DEFLATED if path.name == "manifest.json" else ZIP_STORED
+                  z.write(path, arcname=path.name, compress_type=method)
+
+          size = Path("APP.ZIP").stat().st_size
+          print(f"Created APP.ZIP: {size / 1024**3:.3f} GB")
+          if size >= 2 * 1024**3:
+              raise SystemExit("APP.ZIP is too large for a GitHub Release asset (2 GB limit).")
+          PY
+
+      - name: Generate release tag
+        id: release
+        shell: bash
+        run: echo "tag=blackcat-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Black Cat videos ${{ steps.release.outputs.tag }}"
+          generate_release_notes: false
+          files: |
+            APP.ZIP
+            download-report.json
