@@ -1,13 +1,7 @@
-name: Black Cat Video Sync (VODOS-style)
+name: Black Cat Media Archive
 
 on:
   workflow_dispatch:
-    inputs:
-      max_size_gb:
-        description: "Maximum total video size in GB"
-        required: true
-        default: "1.8"
-        type: string
   schedule:
     - cron: "23 */6 * * *"
 
@@ -15,14 +9,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: blackcat-video-sync
+  group: blackcat-media-archive
   cancel-in-progress: false
 
 jobs:
-  sync:
+  archive:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,244 +28,33 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade requests
 
-      - name: Fetch Black Cat messages and download videos
-        env:
-          MAX_SIZE_GB: ${{ inputs.max_size_gb || '1.8' }}
-        shell: bash
-        run: |
-          python <<'PY'
-          import os
-          import re
-          import json
-          import time
-          import hashlib
-          from pathlib import Path
-          from urllib.parse import urljoin, urlparse, quote
-          import requests
+      - name: Download and package media
+        run: python scripts/blackcat_sync.py
 
-          API = "https://black-cat.thechats.click/api/messages"
-          OUT = Path("downloads")
-          OUT.mkdir(exist_ok=True)
-          MAX_BYTES = int(float(os.environ.get("MAX_SIZE_GB", "1.8")) * 1024**3)
-          ALLOWED_HOSTS = {"black-cat.thechats.click", "cdn.thechats.click"}
-          session = requests.Session()
-          session.headers.update({"User-Agent": "VODOS/1.0 (+https://xnet2.github.io/VOD/)"})
-          # Use the same public VODOS media proxy used by the VODOS web app.
-          MEDIA_PROXY = "https://vodos-media.i0527685490.workers.dev/?url="
-
-          print(f"Fetching messages: {API}")
-          response = session.get(API, timeout=(20, 90))
-          response.raise_for_status()
-          payload = response.json()
-
-          # VODOS consumes the API response as a message array.
-          messages = payload if isinstance(payload, list) else payload.get("messages", [])
-          if not isinstance(messages, list):
-              raise SystemExit("Unexpected API response: messages is not an array")
-
-          candidates = []
-          seen_urls = set()
-
-          for msg in messages:
-              if not isinstance(msg, dict) or msg.get("deleted") or msg.get("isAds"):
-                  continue
-
-              body = str(msg.get("text") or "")
-              media_items = []
-              media_items.extend(("video", u) for u in re.findall(r"\[video-embedded#\]\(([^)]+)\)", body))
-              media_items.extend(("image", u) for u in re.findall(r"\[image-embedded#\]\(([^)]+)\)", body))
-
-              file_info = msg.get("file") or {}
-              if isinstance(file_info, dict):
-                  filetype = str(file_info.get("filetype") or "").lower().lstrip(".")
-                  file_url = file_info.get("url")
-                  video_types = {"mp4", "mov", "webm", "m4v", "video/mp4", "video/webm", "video/quicktime"}
-                  image_types = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "avif",
-                                 "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif"}
-                  if file_url and filetype in video_types:
-                      media_items.append(("video", file_url))
-                  elif file_url and filetype in image_types:
-                      media_items.append(("image", file_url))
-
-              for kind, raw_url in media_items:
-                  url = urljoin("https://black-cat.thechats.click/", str(raw_url).strip())
-                  parsed = urlparse(url)
-                  if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
-                      print(f"Skipping unsupported {kind} host: {url}")
-                      continue
-                  key = (kind, url)
-                  if key in seen_urls:
-                      continue
-                  seen_urls.add(key)
-                  candidates.append({
-                      "url": url,
-                      "kind": kind,
-                      "message_id": str(msg.get("id", "unknown")),
-                      "timestamp": str(msg.get("timestamp", "")),
-                  })
-
-          print(f"Messages scanned: {len(messages)}")
-          print(f"Unique video URLs found: {len(candidates)}")
-
-          total = 0
-          downloaded = 0
-          skipped = 0
-          failures = []
-          manifest = []
-
-          for index, item in enumerate(candidates, 1):
-              if total >= MAX_BYTES:
-                  print("Reached the configured size limit.")
-                  break
-
-              url = item["url"]
-              digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-              ext = Path(urlparse(url).path).suffix.lower()
-              allowed_exts = ( {".mp4", ".mov", ".webm", ".m4v"} if item["kind"] == "video"
-                               else {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"} )
-              if ext not in allowed_exts:
-                  ext = ".mp4" if item["kind"] == "video" else ".jpg"
-              target = OUT / f"blackcat_{item['kind']}_{index:04d}_{digest}{ext}"
-
-              if target.exists():
-                  skipped += 1
-                  total += target.stat().st_size
-                  manifest.append({**item, "file": target.name, "bytes": target.stat().st_size})
-                  continue
-
-              remaining = MAX_BYTES - total
-              print(f"[{index}/{len(candidates)}] Downloading message {item['message_id']}")
-
-              try:
-                  proxy_url = MEDIA_PROXY + quote(url, safe="")
-                  with session.get(proxy_url, stream=True, timeout=(25, 180)) as r:
-                      r.raise_for_status()
-                      content_length = r.headers.get("Content-Length")
-                      if content_length and int(content_length) > remaining:
-                          print("Skipping: this file is larger than the remaining size budget.")
-                          continue
-
-                      content_type = (r.headers.get("Content-Type") or "").lower()
-                      print(f"  HTTP {r.status_code}; Content-Type={content_type or 'unknown'}; Content-Length={r.headers.get('Content-Length', 'unknown')}")
-                      written = 0
-                      exceeded_budget = False
-                      temp_target = target.with_suffix(target.suffix + ".part")
-                      first_bytes = b""
-                      with temp_target.open("wb") as f:
-                          for chunk in r.iter_content(chunk_size=1024 * 1024):
-                              if not chunk:
-                                  continue
-                              if not first_bytes:
-                                  first_bytes = chunk[:64]
-                              if written + len(chunk) > remaining:
-                                  print("Stopping this file at the size limit; removing incomplete file.")
-                                  exceeded_budget = True
-                                  break
-                              f.write(chunk)
-                              written += len(chunk)
-
-                      # Validate file signatures so HTML/error pages are never packaged as media.
-                      is_mp4 = len(first_bytes) >= 8 and first_bytes[4:8] == b"ftyp"
-                      is_webm = first_bytes.startswith(bytes.fromhex("1a45dfa3"))
-                      is_jpeg = first_bytes.startswith(bytes.fromhex("ffd8ff"))
-                      is_png = first_bytes.startswith(bytes.fromhex("89504e470d0a1a0a"))
-                      is_gif = first_bytes.startswith((b"GIF87a", b"GIF89a"))
-                      is_webp = len(first_bytes) >= 12 and first_bytes[:4] == b"RIFF" and first_bytes[8:12] == b"WEBP"
-                      is_bmp = first_bytes.startswith(b"BM")
-                      is_avif = len(first_bytes) >= 12 and first_bytes[4:8] == b"ftyp" and b"avif" in first_bytes[:32]
-                      if item["kind"] == "video":
-                          valid_media = is_mp4 or is_webm
-                      else:
-                          valid_media = is_jpeg or is_png or is_gif or is_webp or is_bmp or is_avif
-                      if exceeded_budget or not written or written < 128 or not valid_media:
-                          temp_target.unlink(missing_ok=True)
-                          reason = "size limit" if exceeded_budget else f"not a valid {item['kind']} response"
-                          print(f"Rejected response ({reason}); first bytes={first_bytes[:24]!r}")
-                          failures.append({
-                              "url": url,
-                              "kind": item["kind"],
-                              "error": reason,
-                              "http_status": r.status_code,
-                              "content_type": content_type,
-                              "bytes_received": written,
-                          })
-                          continue
-
-                      # Correct extension from detected signature when source URL has no usable suffix.
-                      detected_ext = (".mp4" if is_mp4 else ".webm" if is_webm else
-                                      ".jpg" if is_jpeg else ".png" if is_png else
-                                      ".gif" if is_gif else ".webp" if is_webp else
-                                      ".bmp" if is_bmp else ".avif" if is_avif else ext)
-                      if target.suffix.lower() != detected_ext:
-                          target = target.with_suffix(detected_ext)
-                      temp_target.replace(target)
-                      total += written
-                      downloaded += 1
-                      manifest.append({**item, "file": target.name, "bytes": written})
-                      print(f"Saved {target.name}: {written / 1024**2:.2f} MB; total {total / 1024**3:.3f} GB")
-
-              except Exception as exc:
-                  target.unlink(missing_ok=True)
-                  failures.append({"url": url, "error": str(exc)})
-                  print(f"Download failed: {exc}")
-                  time.sleep(1)
-
-          (OUT / "manifest.json").write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2),
-              encoding="utf-8"
-          )
-          Path("download-report.json").write_text(
-              json.dumps({
-                  "messages_scanned": len(messages),
-                  "unique_video_urls": len(candidates),
-                  "downloaded": downloaded,
-                  "skipped_existing": skipped,
-                  "total_bytes": total,
-                  "limit_bytes": MAX_BYTES,
-                  "failures": failures,
-              }, ensure_ascii=False, indent=2),
-              encoding="utf-8"
-          )
-
-          if downloaded == 0 and skipped == 0:
-              raise SystemExit("No valid video files were downloaded. Responses were rejected; inspect download-report.json for HTTP status, content type and validation errors.")
-
-          print(f"Finished: {downloaded} downloaded, {skipped} existing, {total / 1024**3:.3f} GB total.")
-          PY
-
-      - name: Create APP.ZIP
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from zipfile import ZipFile, ZIP_STORED, ZIP_DEFLATED, ZIP64_LIMIT
-
-          files = sorted(p for p in Path("downloads").iterdir() if p.is_file())
-          if not files:
-              raise SystemExit("No downloaded files to package")
-
-          # Store video files without recompressing them; compress only the manifest.
-          with ZipFile("APP.ZIP", "w", allowZip64=True) as z:
-              for path in files:
-                  method = ZIP_DEFLATED if path.name == "manifest.json" else ZIP_STORED
-                  z.write(path, arcname=path.name, compress_type=method)
-
-          size = Path("APP.ZIP").stat().st_size
-          print(f"Created APP.ZIP: {size / 1024**3:.3f} GB")
-          if size >= 2 * 1024**3:
-              raise SystemExit("APP.ZIP is too large for a GitHub Release asset (2 GB limit).")
-          PY
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackcat-download-report
+          path: download-report.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Generate release tag
+        if: success()
         id: release
         shell: bash
-        run: echo "tag=blackcat-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+        run: echo "tag=blackcat-archive-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
+      - name: Publish separate ZIP packages
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          name: "Black Cat videos ${{ steps.release.outputs.tag }}"
+          tag_name: \${{ steps.release.outputs.tag }}
+          name: "Black Cat media archive \${{ steps.release.outputs.tag }}"
           generate_release_notes: false
           files: |
-            APP.ZIP
-            download-report.json
+            APP-1.zip
+            APP-2.zip
+            APP-3.zip
+            APP-4.zip
