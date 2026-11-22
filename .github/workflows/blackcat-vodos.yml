@@ -133,7 +133,8 @@ jobs:
               print(f"[{index}/{len(candidates)}] Downloading message {item['message_id']}")
 
               try:
-                  proxy_url = MEDIA_PROXY + quote(url, safe="")\n                  with session.get(proxy_url, stream=True, timeout=(25, 180)) as r:
+                  proxy_url = MEDIA_PROXY + quote(url, safe="")
+                  with session.get(proxy_url, stream=True, timeout=(25, 180)) as r:
                       r.raise_for_status()
                       content_length = r.headers.get("Content-Length")
                       if content_length and int(content_length) > remaining:
@@ -141,12 +142,14 @@ jobs:
                           continue
 
                       written = 0
+                      exceeded_budget = False
                       with target.open("wb") as f:
                           for chunk in r.iter_content(chunk_size=1024 * 1024):
                               if not chunk:
                                   continue
                               if written + len(chunk) > remaining:
                                   print("Stopping this file at the size limit; removing incomplete file.")
+                                  exceeded_budget = True
                                   break
                               f.write(chunk)
                               written += len(chunk)
