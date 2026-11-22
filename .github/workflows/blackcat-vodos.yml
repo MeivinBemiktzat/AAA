@@ -141,12 +141,18 @@ jobs:
                           print("Skipping: this file is larger than the remaining size budget.")
                           continue
 
+                      content_type = (r.headers.get("Content-Type") or "").lower()
+                      print(f"  HTTP {r.status_code}; Content-Type={content_type or 'unknown'}; Content-Length={r.headers.get('Content-Length', 'unknown')}")
                       written = 0
                       exceeded_budget = False
-                      with target.open("wb") as f:
+                      temp_target = target.with_suffix(target.suffix + ".part")
+                      first_bytes = b""
+                      with temp_target.open("wb") as f:
                           for chunk in r.iter_content(chunk_size=1024 * 1024):
                               if not chunk:
                                   continue
+                              if not first_bytes:
+                                  first_bytes = chunk[:64]
                               if written + len(chunk) > remaining:
                                   print("Stopping this file at the size limit; removing incomplete file.")
                                   exceeded_budget = True
@@ -154,14 +160,28 @@ jobs:
                               f.write(chunk)
                               written += len(chunk)
 
-                      if exceeded_budget or not written or (target.exists() and written + total > MAX_BYTES):
-                          target.unlink(missing_ok=True)
+                      # Do not mistake proxy error pages/JSON for video files.
+                      is_mp4 = len(first_bytes) >= 8 and first_bytes[4:8] == b"ftyp"
+                      is_webm = first_bytes.startswith(bytes.fromhex("1a45dfa3"))
+                      valid_video = is_mp4 or is_webm
+                      if exceeded_budget or not written or written < 1024 or not valid_video:
+                          temp_target.unlink(missing_ok=True)
+                          reason = "size limit" if exceeded_budget else "not a valid MP4/WebM response"
+                          print(f"Rejected response ({reason}); first bytes={first_bytes[:24]!r}")
+                          failures.append({
+                              "url": url,
+                              "error": reason,
+                              "http_status": r.status_code,
+                              "content_type": content_type,
+                              "bytes_received": written,
+                          })
                           continue
 
+                      temp_target.replace(target)
                       total += written
                       downloaded += 1
                       manifest.append({**item, "file": target.name, "bytes": written})
-                      print(f"Saved {target.name}: {written / 1024**2:.1f} MB; total {total / 1024**3:.3f} GB")
+                      print(f"Saved {target.name}: {written / 1024**2:.2f} MB; total {total / 1024**3:.3f} GB")
 
               except Exception as exc:
                   target.unlink(missing_ok=True)
@@ -187,7 +207,7 @@ jobs:
           )
 
           if downloaded == 0 and skipped == 0:
-              raise SystemExit("No videos were downloaded. Check API response and video URLs.")
+              raise SystemExit("No valid video files were downloaded. Responses were rejected; inspect download-report.json for HTTP status, content type and validation errors.")
 
           print(f"Finished: {downloaded} downloaded, {skipped} existing, {total / 1024**3:.3f} GB total.")
           PY
