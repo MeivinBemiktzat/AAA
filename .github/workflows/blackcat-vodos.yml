@@ -31,13 +31,6 @@ jobs:
       - name: Download and package media
         run: python scripts/blackcat_sync.py
 
-      - name: Save archive progress
-        if: success()
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Save Black Cat archive progress"
-          file_pattern: archive-state.json
-
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,11 +50,18 @@ jobs:
         if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: \${{ steps.release.outputs.tag }}
-          name: "Black Cat media archive \${{ steps.release.outputs.tag }}"
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Black Cat media archive ${{ steps.release.outputs.tag }}"
           generate_release_notes: false
           files: |
             APP-1.zip
             APP-2.zip
             APP-3.zip
             APP-4.zip
+
+      - name: Save archive progress
+        if: success()
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Save Black Cat archive progress"
+          file_pattern: archive-state.json
