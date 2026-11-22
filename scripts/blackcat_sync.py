@@ -317,7 +317,9 @@ def main():
     REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if not package_results:
-        raise SystemExit("No valid media files were packaged; inspect download-report.json")
+        if candidates:
+            raise SystemExit("No valid media files were packaged; inspect download-report.json")
+        print("No new media to archive.")
 
 if __name__ == "__main__":
     main()
