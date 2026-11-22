@@ -47,7 +47,7 @@ jobs:
         run: echo "tag=blackcat-archive-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
       - name: Publish separate ZIP packages
-        if: success()
+        if: success() && hashFiles('APP-*.zip') != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
