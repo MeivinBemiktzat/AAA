@@ -167,19 +167,26 @@ def write_package(index, files, manifest_rows):
 
 def main():
     OUT.mkdir(exist_ok=True)
+    state_path = Path("archive-state.json")
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    processed = set(state.get("processed_urls", []))
+    package_index = int(state.get("next_package", 1))
+    if package_index > MAX_PACKAGES:
+        raise SystemExit("All four archive packages have already been allocated.")
     messages, pagination_supported = fetch_all_messages()
-    candidates = media_candidates(messages)
+    all_candidates = media_candidates(messages)
+    candidates = [item for item in all_candidates if item["url"] not in processed]
     videos = sum(1 for x in candidates if x["kind"] == "video")
     images = sum(1 for x in candidates if x["kind"] == "image")
     print(f"Messages scanned: {len(messages)}")
     print(f"Unique videos: {videos}; unique images: {images}; total media: {len(candidates)}")
 
-    package_index = 1
     current_dir = package_dir(package_index)
     current_bytes = 0
     current_files = []
     current_manifest = []
     package_results = []
+    newly_archived = set()
     downloaded = {"video": 0, "image": 0}
     skipped = 0
     failures = []
@@ -236,6 +243,7 @@ def main():
                 result = write_package(package_index, current_files, current_manifest)
                 if result:
                     package_results.append(result)
+                    newly_archived.update(row["url"] for row in current_manifest)
                 package_index += 1
                 if package_index > MAX_PACKAGES:
                     print("All four package slots are full; remaining media is left for a later run.")
@@ -280,11 +288,22 @@ def main():
     result = write_package(package_index, current_files, current_manifest)
     if result:
         package_results.append(result)
+        newly_archived.update(row["url"] for row in current_manifest)
+
+    processed.update(newly_archived)
+    next_package = package_index + 1 if package_results else package_index
+    state_path.write_text(json.dumps({
+        "processed_urls": sorted(processed),
+        "next_package": next_package,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = {
         "messages_scanned": len(messages),
         "pagination_supported": pagination_supported,
-        "unique_media": len(candidates),
+        "unique_media_found": len(all_candidates),
+        "already_archived": len(processed) - len(newly_archived),
+        "new_media_pending": len(candidates),
         "unique_video_urls": videos,
         "unique_image_urls": images,
         "downloaded_videos": downloaded["video"],
