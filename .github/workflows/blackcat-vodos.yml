@@ -58,7 +58,7 @@ jobs:
           session = requests.Session()
           session.headers.update({"User-Agent": "VODOS/1.0 (+https://xnet2.github.io/VOD/)"})
           # Use the same public VODOS media proxy used by the VODOS web app.
-          MEDIA_PROXY = "https://vodos.i0527685490.workers.dev/?url="
+          MEDIA_PROXY = "https://vodos-media.i0527685490.workers.dev/?url="
 
           print(f"Fetching messages: {API}")
           response = session.get(API, timeout=(20, 90))
@@ -78,26 +78,35 @@ jobs:
                   continue
 
               body = str(msg.get("text") or "")
-              urls = re.findall(r"\[video-embedded#\]\(([^)]+)\)", body)
+              media_items = []
+              media_items.extend(("video", u) for u in re.findall(r"\[video-embedded#\]\(([^)]+)\)", body))
+              media_items.extend(("image", u) for u in re.findall(r"\[image-embedded#\]\(([^)]+)\)", body))
 
               file_info = msg.get("file") or {}
               if isinstance(file_info, dict):
-                  filetype = str(file_info.get("filetype") or "").lower()
+                  filetype = str(file_info.get("filetype") or "").lower().lstrip(".")
                   file_url = file_info.get("url")
-                  if file_url and filetype in {"mp4", "mov", "webm", "m4v"}:
-                      urls.append(file_url)
+                  video_types = {"mp4", "mov", "webm", "m4v", "video/mp4", "video/webm", "video/quicktime"}
+                  image_types = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "avif",
+                                 "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif"}
+                  if file_url and filetype in video_types:
+                      media_items.append(("video", file_url))
+                  elif file_url and filetype in image_types:
+                      media_items.append(("image", file_url))
 
-              for raw_url in urls:
+              for kind, raw_url in media_items:
                   url = urljoin("https://black-cat.thechats.click/", str(raw_url).strip())
                   parsed = urlparse(url)
                   if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
-                      print(f"Skipping unsupported video host: {url}")
+                      print(f"Skipping unsupported {kind} host: {url}")
                       continue
-                  if url in seen_urls:
+                  key = (kind, url)
+                  if key in seen_urls:
                       continue
-                  seen_urls.add(url)
+                  seen_urls.add(key)
                   candidates.append({
                       "url": url,
+                      "kind": kind,
                       "message_id": str(msg.get("id", "unknown")),
                       "timestamp": str(msg.get("timestamp", "")),
                   })
@@ -119,9 +128,11 @@ jobs:
               url = item["url"]
               digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
               ext = Path(urlparse(url).path).suffix.lower()
-              if ext not in {".mp4", ".mov", ".webm", ".m4v"}:
-                  ext = ".mp4"
-              target = OUT / f"blackcat_{index:04d}_{digest}{ext}"
+              allowed_exts = ( {".mp4", ".mov", ".webm", ".m4v"} if item["kind"] == "video"
+                               else {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"} )
+              if ext not in allowed_exts:
+                  ext = ".mp4" if item["kind"] == "video" else ".jpg"
+              target = OUT / f"blackcat_{item['kind']}_{index:04d}_{digest}{ext}"
 
               if target.exists():
                   skipped += 1
@@ -160,16 +171,26 @@ jobs:
                               f.write(chunk)
                               written += len(chunk)
 
-                      # Do not mistake proxy error pages/JSON for video files.
+                      # Validate file signatures so HTML/error pages are never packaged as media.
                       is_mp4 = len(first_bytes) >= 8 and first_bytes[4:8] == b"ftyp"
                       is_webm = first_bytes.startswith(bytes.fromhex("1a45dfa3"))
-                      valid_video = is_mp4 or is_webm
-                      if exceeded_budget or not written or written < 1024 or not valid_video:
+                      is_jpeg = first_bytes.startswith(bytes.fromhex("ffd8ff"))
+                      is_png = first_bytes.startswith(bytes.fromhex("89504e470d0a1a0a"))
+                      is_gif = first_bytes.startswith((b"GIF87a", b"GIF89a"))
+                      is_webp = len(first_bytes) >= 12 and first_bytes[:4] == b"RIFF" and first_bytes[8:12] == b"WEBP"
+                      is_bmp = first_bytes.startswith(b"BM")
+                      is_avif = len(first_bytes) >= 12 and first_bytes[4:8] == b"ftyp" and b"avif" in first_bytes[:32]
+                      if item["kind"] == "video":
+                          valid_media = is_mp4 or is_webm
+                      else:
+                          valid_media = is_jpeg or is_png or is_gif or is_webp or is_bmp or is_avif
+                      if exceeded_budget or not written or written < 128 or not valid_media:
                           temp_target.unlink(missing_ok=True)
-                          reason = "size limit" if exceeded_budget else "not a valid MP4/WebM response"
+                          reason = "size limit" if exceeded_budget else f"not a valid {item['kind']} response"
                           print(f"Rejected response ({reason}); first bytes={first_bytes[:24]!r}")
                           failures.append({
                               "url": url,
+                              "kind": item["kind"],
                               "error": reason,
                               "http_status": r.status_code,
                               "content_type": content_type,
@@ -177,6 +198,13 @@ jobs:
                           })
                           continue
 
+                      # Correct extension from detected signature when source URL has no usable suffix.
+                      detected_ext = (".mp4" if is_mp4 else ".webm" if is_webm else
+                                      ".jpg" if is_jpeg else ".png" if is_png else
+                                      ".gif" if is_gif else ".webp" if is_webp else
+                                      ".bmp" if is_bmp else ".avif" if is_avif else ext)
+                      if target.suffix.lower() != detected_ext:
+                          target = target.with_suffix(detected_ext)
                       temp_target.replace(target)
                       total += written
                       downloaded += 1
