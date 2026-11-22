@@ -56,7 +56,9 @@ jobs:
           MAX_BYTES = int(float(os.environ.get("MAX_SIZE_GB", "1.8")) * 1024**3)
           ALLOWED_HOSTS = {"black-cat.thechats.click", "cdn.thechats.click"}
           session = requests.Session()
-          session.headers.update({"User-Agent": "VODOS/1.0 (+https://xnet2.github.io/VOD/)"})\n          # Use the same public VODOS media proxy used by the VODOS web app.\n          MEDIA_PROXY = "https://vodos.i0527685490.workers.dev/?url="
+          session.headers.update({"User-Agent": "VODOS/1.0 (+https://xnet2.github.io/VOD/)"})
+          # Use the same public VODOS media proxy used by the VODOS web app.
+          MEDIA_PROXY = "https://vodos.i0527685490.workers.dev/?url="
 
           print(f"Fetching messages: {API}")
           response = session.get(API, timeout=(20, 90))
